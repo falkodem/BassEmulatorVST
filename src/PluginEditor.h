@@ -14,11 +14,11 @@ public:
 private:
     BassEmulatorProcessor& processor;
 
-    juce::Slider roomSizeSlider, dampingSlider, wetSlider, drySlider;
-    juce::Label  roomSizeLabel,  dampingLabel,  wetLabel,  dryLabel;
+    juce::Slider cutoffSlider, resonanceSlider, attackSlider, releaseSlider, dryWetSlider;
+    juce::Label  cutoffLabel,  resonanceLabel,  attackLabel,  releaseLabel,  dryWetLabel;
 
     juce::AudioProcessorValueTreeState::SliderAttachment
-        roomSizeAttachment, dampingAttachment, wetAttachment, dryAttachment;
+        cutoffAttachment, resonanceAttachment, attackAttachment, releaseAttachment, dryWetAttachment;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(BassEmulatorEditor)
 };

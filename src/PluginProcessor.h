@@ -1,5 +1,8 @@
 #pragma once
 #include <JuceHeader.h>
+#include "YinPitchDetector.h"
+#include "OnsetDetector.h"
+#include "EnvelopeFollower.h"
 
 class BassEmulatorProcessor : public juce::AudioProcessor
 {
@@ -32,11 +35,18 @@ public:
     juce::AudioProcessorValueTreeState apvts;
 
 private:
-    juce::Reverb reverb;
-    juce::Reverb::Parameters reverbParams;
+    juce::dsp::Oscillator<float>   osc;
+    juce::dsp::LadderFilter<float> filter;
+
+    YinPitchDetector yin;
+    OnsetDetector    onset;
+    EnvelopeFollower envFollower;
+
+    juce::AudioBuffer<float> bassBuffer;
+    float currentPitch = 110.0f;
+    bool  pitchIsValid = false;
 
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
-    void updateReverbParameters();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(BassEmulatorProcessor)
 };
