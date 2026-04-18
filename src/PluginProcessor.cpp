@@ -79,7 +79,7 @@ void BassEmulatorProcessor::setStateInformation(const void* data, int sizeInByte
 
 juce::AudioProcessorEditor* BassEmulatorProcessor::createEditor()
 {
-    return new BassVSTEditor(*this);
+    return new BassEmulatorEditor(*this);
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
