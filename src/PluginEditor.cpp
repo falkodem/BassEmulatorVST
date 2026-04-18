@@ -2,32 +2,35 @@
 
 BassEmulatorEditor::BassEmulatorEditor(BassEmulatorProcessor& p)
     : AudioProcessorEditor(&p), processor(p),
-      roomSizeAttachment(p.apvts, "roomSize", roomSizeSlider),
-      dampingAttachment (p.apvts, "damping",  dampingSlider),
-      wetAttachment     (p.apvts, "wetLevel", wetSlider),
-      dryAttachment     (p.apvts, "dryLevel", drySlider)
+      cutoffAttachment    (p.apvts, "filterCutoff",    cutoffSlider),
+      resonanceAttachment (p.apvts, "filterResonance", resonanceSlider),
+      attackAttachment    (p.apvts, "envAttack",       attackSlider),
+      releaseAttachment   (p.apvts, "envRelease",      releaseSlider),
+      dryWetAttachment    (p.apvts, "dryWet",          dryWetSlider)
 {
     auto setupSlider = [this](juce::Slider& s) {
         s.setSliderStyle(juce::Slider::RotaryVerticalDrag);
         s.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 60, 20);
         addAndMakeVisible(s);
     };
-    setupSlider(roomSizeSlider);
-    setupSlider(dampingSlider);
-    setupSlider(wetSlider);
-    setupSlider(drySlider);
+    setupSlider(cutoffSlider);
+    setupSlider(resonanceSlider);
+    setupSlider(attackSlider);
+    setupSlider(releaseSlider);
+    setupSlider(dryWetSlider);
 
     auto setupLabel = [this](juce::Label& l, const juce::String& text) {
         l.setText(text, juce::dontSendNotification);
         l.setJustificationType(juce::Justification::centred);
         addAndMakeVisible(l);
     };
-    setupLabel(roomSizeLabel, "Room");
-    setupLabel(dampingLabel,  "Damping");
-    setupLabel(wetLabel,      "Wet");
-    setupLabel(dryLabel,      "Dry");
+    setupLabel(cutoffLabel,    "Cutoff");
+    setupLabel(resonanceLabel, "Resonance");
+    setupLabel(attackLabel,    "Attack");
+    setupLabel(releaseLabel,   "Release");
+    setupLabel(dryWetLabel,    "Dry/Wet");
 
-    setSize(400, 200);
+    setSize(500, 200);
 }
 
 BassEmulatorEditor::~BassEmulatorEditor() {}
@@ -40,13 +43,13 @@ void BassEmulatorEditor::paint(juce::Graphics& g)
 void BassEmulatorEditor::resized()
 {
     auto area = getLocalBounds().reduced(10);
-    int sliderWidth = area.getWidth() / 4;
-    int labelHeight = 20;
+    const int sliderWidth = area.getWidth() / 5;
+    const int labelHeight = 20;
 
-    juce::Label*  labels[]  = { &roomSizeLabel, &dampingLabel, &wetLabel, &dryLabel };
-    juce::Slider* sliders[] = { &roomSizeSlider, &dampingSlider, &wetSlider, &drySlider };
+    juce::Label*  labels[]  = { &cutoffLabel, &resonanceLabel, &attackLabel, &releaseLabel, &dryWetLabel };
+    juce::Slider* sliders[] = { &cutoffSlider, &resonanceSlider, &attackSlider, &releaseSlider, &dryWetSlider };
 
-    for (int i = 0; i < 4; ++i)
+    for (int i = 0; i < 5; ++i)
     {
         auto col = area.removeFromLeft(sliderWidth);
         labels[i]->setBounds(col.removeFromTop(labelHeight));
