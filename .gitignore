@@ -1,3 +1,11 @@
 build/
 .vs/
 *.user
+data/
+runs/
+models/
+processed/
+venv/
+__pycache__/
+*.pyc
+poetry.lock

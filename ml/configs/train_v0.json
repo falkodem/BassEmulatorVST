@@ -1,0 +1,28 @@
+{
+  "data_version": "v0",
+  "target_sr": 44100,
+  "window_size": 1024,
+  "hop_size": 512,
+
+  "val_file_frac": 0.1,
+  "val_rnd_frac": 0.1,
+  "seed": 42,
+
+  "architecture": "DilatedConvNet",
+
+  "batch_size": 512,
+  "epochs": 200,
+  "lr": 0.002,
+  "scheduler_patience": 5,
+  "scheduler_factor": 0.5,
+
+  "model_version": "v0",
+
+  "loss": "multi_scale_stft",
+  "domain": "waveform",
+  "stft_n_fft": 512,
+  "stft_hop_length": 128,
+
+  "clip_grad_norm": null,
+  "early_stopping_patience": null
+}
