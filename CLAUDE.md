@@ -23,16 +23,55 @@ cp -r build/BassEmulatorVST_artefacts/Release/VST3/BassEmulatorVST.vst3 "D:/Musi
 
 ```
 BassEmulatorVST/
-├── CMakeLists.txt          — сборка, JUCE 7.0.12 через FetchContent
-└── src/
-    ├── PluginProcessor.h/cpp   — вся DSP логика, APVTS с параметрами
-    ├── PluginEditor.h/cpp      — GUI (5 ручек: Cutoff, Resonance, Attack, Release, Dry/Wet)
-    ├── YinPitchDetector.h      — YIN pitch detection (header-only)
-    ├── OnsetDetector.h         — детектор атаки по энергии (header-only)
-    └── EnvelopeFollower.h      — RC-цепь огибающей (header-only)
+├── CMakeLists.txt              — сборка VST3, JUCE 7.0.12 через FetchContent
+├── src/                        — DSP плагин (C++/JUCE)
+│   ├── PluginProcessor.h/cpp   — вся DSP логика, APVTS с параметрами
+│   ├── PluginEditor.h/cpp      — GUI
+│   ├── YinPitchDetector.h      — YIN pitch detection (header-only)
+│   ├── OnsetDetector.h         — детектор атаки по энергии (header-only)
+│   └── EnvelopeFollower.h      — RC-цепь огибающей (header-only)
+├── ml/                         — весь ML-код (Python)
+│   ├── configs/train_v0.json   — гиперпараметры и версии данных/модели
+│   ├── nn_architectures/       — модели; REGISTRY dict для выбора по имени
+│   │   ├── __init__.py
+│   │   └── bassnet.py          — WaveConvNet (1D CNN, waveform domain)
+│   ├── train_config.py         — dataclass TrainConfig
+│   ├── train.py                — трейн-луп (запускать отсюда)
+│   ├── process_audio.py        — оффлайн-инференс (overlap-add)
+│   ├── import_dataset.py       — импорт WAV из Reaper → data/v0/
+│   └── slice_dataset.py        — нарезка окон → data/v0/windows/
+├── data/v0/                    — аудиоданные (в .gitignore)
+│   ├── guitar/ bass/           — сырые WAV-пары
+│   ├── index.csv
+│   └── windows/                — guitar.npy  bass.npy  meta.csv
+└── runs/                       — артефакты обучения (в .gitignore)
+    └── v0/
+        └── YYYYMMDD_HHMMSS/
+            ├── best.pt         — чекпойнт лучшей эпохи
+            ├── config.json     — снимок гиперпараметров этого рана
+            └── events.out.*    — TensorBoard events
 ```
 
-## Текущее состояние: Phase 1 (классический bass emulator)
+### ML-команды
+
+```bash
+# Подготовка данных
+poetry run python ml/import_dataset.py
+poetry run python ml/slice_dataset.py
+
+# Обучение
+poetry run python ml/train.py
+
+# TensorBoard (все раны)
+tensorboard --logdir runs/
+
+# Оффлайн-инференс (--run = папка рана, содержит best.pt + config.json)
+poetry run python ml/process_audio.py \
+  --run runs/v0/YYYYMMDD_HHMMSS \
+  --input data/v0/guitar/
+```
+
+## Phase 1: Параметры и пайплайн
 
 ### Параметры (APVTS)
 
@@ -60,25 +99,6 @@ BassEmulatorVST/
   │
   └─→ mix: out = dry*(1-wet) + bass*wet
 ```
-
-### DSP компоненты
-
-**YinPitchDetector** — кольцевой буфер 1536 сэмплов (1024 + 512), обновление питча каждые 1024 новых сэмпла. 4 шага: difference function → CMNDF → absolute threshold (0.15) → parabolic interpolation. Диапазон: 70–1300 Гц (гитарный регистр).
-
-**OnsetDetector** — RMS текущего блока vs предыдущего. Порог: ratio > 2.0 (6 дБ), пол тишины: 1e-4. Cooldown 50 мс после срабатывания.
-
-**EnvelopeFollower** — one-pole filter с раздельными attack/release коэффициентами. `coeff = exp(-1 / (sampleRate × ms / 1000))`. `triggerAttack()` сбрасывает envelope в 0 для чёткой атаки.
-
-**Oscillator** — `juce::dsp::Oscillator`, sawtooth: `f(x) = x / π`. Частота = F0/2 (октава вниз).
-
-**Filter** — `juce::dsp::LadderFilter`, режим LPF12.
-
-## Roadmap
-
-- [x] MVP: JUCE plugin wrapper + реверб (VST3, работает в Reaper)
-- [x] Phase 1: Классический bass emulator (YIN + onset + envelope + sawtooth + LadderFilter)
-- [ ] Phase 2: RTNeural — TCN для real-time (требует парные данные гитара/бас)
-- [ ] Phase 3: RAVE — VAE для offline постобработки
 
 ## Ключевые решения
 
