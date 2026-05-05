@@ -1,7 +1,7 @@
 # BassEmulatorVST
 
 VST plugin для Windows/Reaper: трансформация гитарного звука в звук баса.
-Цель — решить проблему неточного интонирования при атаке (характерно для Guitar Rig, Ampero Stomp).
+Цель — решить проблему неточного интонирования при атаке (характерно для большинства realtime плагинов).
 
 ## Архитектурные заметки
 
@@ -112,7 +112,7 @@ flowchart TD
 
 ## Roadmap
 
-- [ ] MVP: JUCE plugin wrapper + простой реверб
+- [x] MVP: JUCE plugin wrapper + простой реверб
 - [ ] Исследование архитектуры end-to-end модели (guitar→bass)
 - [ ] Интеграция RTNeural
 - [ ] Real-time режим
