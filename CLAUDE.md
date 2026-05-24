@@ -19,7 +19,8 @@ VST3 плагин (JUCE, Windows, Reaper): трансформация гитар
 
 ```bash
 # Первый раз (или после переименования/переноса проекта)
-cmake -B build -S .
+# ANIRA требует явного CMAKE_BUILD_TYPE — без него configure падает с ошибкой
+cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
 
 # Пересборка
 cmake --build build --config Release
