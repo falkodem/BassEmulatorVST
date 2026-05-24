@@ -18,13 +18,14 @@ Usage:
 import re
 import csv
 import shutil
+import argparse
 from pathlib import Path
 
 import soundfile as sf
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
-SRC_DIR    = Path(r"D:\Music\Projects\dataset")
+_DEFAULT_SRC = "/media/falkodem/VolumeD/Music/Projects/dataset"
 DATA_DIR   = Path(__file__).resolve().parent.parent / "data" / "v0"
 INDEX_CSV  = DATA_DIR / "index.csv"
 GUITAR_DIR = DATA_DIR / "guitar"
@@ -91,6 +92,13 @@ def load_existing_entries(csv_path: Path) -> set:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--src", default=_DEFAULT_SRC,
+                        help="Path to folder with raw Reaper .wav exports")
+    args = parser.parse_args()
+
+    SRC_DIR = Path(args.src)
+
     GUITAR_DIR.mkdir(parents=True, exist_ok=True)
     BASS_DIR.mkdir(parents=True, exist_ok=True)
 

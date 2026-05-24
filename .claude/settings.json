@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /home/falkodem/Documents/Projects/BassEmulatorVST/.claude/render_on_change.sh",
+            "statusMessage": "Rendering RESEARCH.html..."
+          }
+        ]
+      }
+    ]
+  }
+}

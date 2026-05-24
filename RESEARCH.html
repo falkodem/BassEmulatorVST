@@ -1,0 +1,1512 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BassEmulatorVST — Research</title>
+<style>
+/* ── Reset & base ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:       #0f1117;
+  --surface:  #1a1d27;
+  --border:   #2e3147;
+  --accent:   #7c6af7;
+  --accent2:  #4fc3f7;
+  --text:     #e2e4f0;
+  --muted:    #7a7f9a;
+  --code-bg:  #13151f;
+  --tag-bg:   #1e2235;
+  --nav-w:    280px;
+}
+html { scroll-behavior: smooth; }
+body {
+  font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.7;
+  font-size: 15px;
+}
+
+/* ── Layout ── */
+.layout { display: flex; min-height: 100vh; }
+
+nav {
+  width: var(--nav-w);
+  min-width: var(--nav-w);
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  padding: 32px 20px;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+}
+nav .logo {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 6px;
+}
+nav .subtitle {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 28px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 16px;
+}
+nav ul { list-style: none; }
+nav li { margin-bottom: 2px; }
+nav a {
+  display: block;
+  padding: 5px 10px;
+  border-radius: 6px;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 13px;
+  transition: all .15s;
+}
+nav a:hover { background: var(--tag-bg); color: var(--text); }
+nav ul ul a { padding-left: 22px; font-size: 12px; }
+nav ul ul ul a { padding-left: 34px; }
+
+main {
+  flex: 1;
+  max-width: 860px;
+  padding: 56px 56px 100px;
+  min-width: 0;
+}
+
+/* ── Hero ── */
+.hero {
+  background: linear-gradient(135deg, #1a1d27 0%, #141828 100%);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 40px 44px;
+  margin-bottom: 52px;
+  position: relative;
+  overflow: hidden;
+}
+.hero::before {
+  content: '';
+  position: absolute; inset: 0;
+  background: radial-gradient(ellipse at 80% 50%, rgba(124,106,247,.08) 0%, transparent 70%);
+  pointer-events: none;
+}
+.hero h1 {
+  font-size: 26px;
+  font-weight: 700;
+  background: linear-gradient(135deg, #fff 0%, var(--accent) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  margin-bottom: 10px;
+}
+.hero .meta {
+  color: var(--muted);
+  font-size: 13px;
+  display: flex;
+  gap: 24px;
+}
+.hero .meta span::before { content: '◆ '; color: var(--accent); font-size: 10px; }
+
+/* ── Typography ── */
+h2 {
+  font-size: 20px;
+  font-weight: 700;
+  color: #fff;
+  margin: 56px 0 20px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+h2::before {
+  content: '';
+  display: block;
+  width: 3px;
+  height: 20px;
+  background: var(--accent);
+  border-radius: 2px;
+}
+h3 {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--accent2);
+  margin: 32px 0 12px;
+}
+h4 {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 24px 0 8px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+p { margin-bottom: 14px; }
+
+/* ── Details / Summary (collapsible) ── */
+details {
+  background: var(--tag-bg);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 0 8px 8px 0;
+  margin: 16px 0 24px;
+  padding: 0;
+}
+details[open] summary { border-bottom: 1px solid var(--border); }
+summary {
+  padding: 12px 18px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13.5px;
+  color: var(--accent2);
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  user-select: none;
+}
+summary::-webkit-details-marker { display: none; }
+summary::before {
+  content: '▶';
+  font-size: 10px;
+  color: var(--accent);
+  transition: transform .2s;
+  flex-shrink: 0;
+}
+details[open] summary::before { transform: rotate(90deg); }
+details > *:not(summary) {
+  padding: 16px 20px;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+strong { color: #fff; font-weight: 600; }
+em { color: var(--accent2); font-style: normal; font-weight: 500; }
+
+/* ── Code ── */
+code {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+  font-size: 13px;
+  color: #a6b0cf;
+}
+pre {
+  background: var(--code-bg) !important;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px 24px;
+  overflow-x: auto;
+  margin: 16px 0 24px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: inherit;
+  color: #a6b0cf;
+}
+
+/* Pygments dark theme overrides */
+.highlight .hll { background-color: #1e2235 }
+.highlight  { background: transparent }
+.highlight .c  { color: #6a6f8a; font-style: italic }
+.highlight .k  { color: #c792ea }
+.highlight .n  { color: #a6b0cf }
+.highlight .o  { color: #89ddff }
+.highlight .s  { color: #c3e88d }
+.highlight .m  { color: #f78c6c }
+.highlight .nb { color: #82aaff }
+.highlight .nf { color: #82aaff }
+.highlight .nn { color: var(--accent2) }
+.highlight .nt { color: #f07178 }
+.highlight .na { color: #ffcb6b }
+.highlight .mi { color: #f78c6c }
+.highlight .kn { color: #c792ea }
+.highlight .kd { color: #c792ea }
+.highlight .kr { color: #c792ea }
+.highlight .kt { color: var(--accent2) }
+.highlight .cm { color: #6a6f8a; font-style: italic }
+.highlight .cp { color: #6a6f8a }
+.highlight .c1 { color: #6a6f8a; font-style: italic }
+.highlight .cs { color: #6a6f8a; font-style: italic }
+
+/* ── Tables ── */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0 28px;
+  font-size: 13.5px;
+}
+thead tr {
+  background: var(--tag-bg);
+  border-bottom: 2px solid var(--accent);
+}
+th {
+  padding: 10px 14px;
+  text-align: left;
+  font-weight: 600;
+  color: var(--accent2);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+td {
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+tr:hover td { background: rgba(124,106,247,.05); }
+td code { font-size: 12px; }
+
+/* ── Approach map ── */
+.approach-map pre {
+  border-left: 3px solid var(--accent) !important;
+  border-radius: 0 8px 8px 0 !important;
+  background: var(--tag-bg) !important;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text);
+}
+.approach-map pre code { color: var(--text); }
+
+/* ── Blockquote ── */
+blockquote {
+  border-left: 3px solid var(--accent);
+  background: var(--tag-bg);
+  margin: 16px 0;
+  padding: 14px 20px;
+  border-radius: 0 8px 8px 0;
+  font-style: italic;
+  color: #b0b8d0;
+}
+
+/* ── Lists ── */
+ul, ol {
+  padding-left: 24px;
+  margin-bottom: 14px;
+}
+li { margin-bottom: 5px; }
+li > ul { margin-top: 5px; margin-bottom: 5px; }
+
+/* ── Horizontal rule ── */
+hr { border: none; border-top: 1px solid var(--border); margin: 40px 0; }
+
+/* ── Star badge ── */
+.toc a[href*="pesto"], .toc a[href*="swift"] { color: var(--accent); }
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+/* ── Responsive ── */
+@media (max-width: 900px) {
+  nav { display: none; }
+  main { padding: 32px 24px 60px; }
+}
+</style>
+</head>
+<body>
+<div class="layout">
+
+<nav>
+  <div class="logo">BassEmulatorVST</div>
+  <div class="subtitle">Research Document · May 2026</div>
+  <div class="toc">
+<ul>
+<li><a href="#содержание">Содержание</a></li>
+<li><a href="#1-постановка-задачи">1. Постановка задачи</a><ul>
+<li><a href="#что-значит-правильный-бас">Что значит "правильный бас"</a></li>
+</ul>
+</li>
+<li><a href="#2-физика-проблемы">2. Физика проблемы</a><ul>
+<li><a href="#21-почему-питч-детектировать-сложно-на-атаке">2.1 Почему питч детектировать сложно на атаке</a></li>
+<li><a href="#22-природа-атаки-ноты">2.2 Природа атаки ноты</a></li>
+<li><a href="#23-субгармоника-f₀2-проблема-синтеза">2.3 Субгармоника f₀/2 — проблема синтеза</a></li>
+</ul>
+</li>
+<li><a href="#3-карта-подходов">3. Карта подходов</a><ul>
+<li><a href="#сравнение-подходов">Сравнение подходов</a></li>
+<li><a href="#расшифровка-терминов">Расшифровка терминов</a></li>
+</ul>
+</li>
+<li><a href="#4-анализ-существующих-решений">4. Анализ существующих решений</a><ul>
+<li><a href="#41-hardware">4.1 Hardware</a></li>
+<li><a href="#42-software">4.2 Software</a></li>
+<li><a href="#43-рыночный-gap-подтверждён-живыми-форумами-20222025">4.3 Рыночный gap подтверждён живыми форумами (2022–2025)</a></li>
+<li><a href="#45-общий-механизм-сбоя">4.5 Общий механизм сбоя</a></li>
+<li><a href="#44-gap-анализ-пять-проблем-и-кто-их-решает">4.4 Gap-анализ: пять проблем и кто их решает</a></li>
+</ul>
+</li>
+<li><a href="#5-подход-a-rule-based-синтез-phase-1-реализован">5. Подход A: Rule-based синтез (Phase 1, реализован)</a><ul>
+<li><a href="#принцип">Принцип</a></li>
+<li><a href="#плюсы">Плюсы</a></li>
+<li><a href="#минусы">Минусы</a></li>
+</ul>
+</li>
+<li><a href="#6-подход-b-conditioned-ml-ddsp-style-главный-кандидат">6. Подход B: Conditioned ML (DDSP-style) — главный кандидат</a><ul>
+<li><a href="#идея-разделить-задачи">Идея: разделить задачи</a></li>
+<li><a href="#ddsp-differentiable-digital-signal-processing">DDSP (Differentiable Digital Signal Processing)</a></li>
+<li><a href="#newt-neural-waveshaping-synthesis">NEWT (Neural Waveshaping Synthesis)</a></li>
+<li><a href="#плюсы-conditioned-ml">Плюсы Conditioned ML</a></li>
+<li><a href="#минусы_1">Минусы</a></li>
+</ul>
+</li>
+<li><a href="#7-подход-c-end-to-end-waveform">7. Подход C: End-to-end waveform</a><ul>
+<li><a href="#70-текущий-baseline-waveconvnet-v0">7.0 Текущий baseline: WaveConvNet (v0)</a></li>
+<li><a href="#tcn-temporal-convolutional-network">TCN (Temporal Convolutional Network)</a></li>
+<li><a href="#gru-lstm">GRU / LSTM</a></li>
+<li><a href="#rave-vae">RAVE (VAE)</a></li>
+<li><a href="#scyclone-референсная-реализация-rave-timbre-transfer-в-juce">Scyclone — референсная реализация RAVE timbre transfer в JUCE ⭐</a></li>
+<li><a href="#диффузионные-модели-20242025-новейший-фронтир">Диффузионные модели (2024–2025, новейший фронтир)</a></li>
+<li><a href="#плюсы-end-to-end">Плюсы end-to-end</a></li>
+<li><a href="#минусы_2">Минусы</a></li>
+</ul>
+</li>
+<li><a href="#8-pitch-detection">8. Pitch Detection</a><ul>
+<li><a href="#алгоритмы-детальный-разбор">Алгоритмы: детальный разбор</a></li>
+<li><a href="#81-разбор-статьи-koguchi-morise-eurasip-2024">8.1 Разбор статьи: Koguchi &amp; Morise, EURASIP 2024</a></li>
+<li><a href="#сравнение-обновлено">Сравнение (обновлено)</a></li>
+</ul>
+</li>
+<li><a href="#9-neural-architectures">9. Neural Architectures</a><ul>
+<li><a href="#wavenet-style">WaveNet-style</a></li>
+<li><a href="#tcn">TCN</a></li>
+<li><a href="#gru-lstm_1">GRU / LSTM</a></li>
+<li><a href="#ddsp">DDSP</a></li>
+<li><a href="#newt-fastnewt">NEWT (FastNEWT)</a></li>
+<li><a href="#диффузия-offline">Диффузия (offline)</a></li>
+</ul>
+</li>
+<li><a href="#10-loss-functions">10. Loss Functions</a><ul>
+<li><a href="#зачем-не-просто-l1l2">Зачем не просто L1/L2</a></li>
+<li><a href="#multi-scale-stft-loss-mrstft-де-факто-стандарт">Multi-Scale STFT Loss (MRSTFT) — де-факто стандарт</a></li>
+<li><a href="#envelope-loss">Envelope Loss</a></li>
+<li><a href="#gan-adversarial">GAN / Adversarial</a></li>
+<li><a href="#рецепт-для-проекта">Рецепт для проекта</a></li>
+</ul>
+</li>
+<li><a href="#11-датасеты">11. Датасеты</a><ul>
+<li><a href="#slakh2100-лучший-старт">Slakh2100 ⭐ — лучший старт</a></li>
+<li><a href="#guitarset">GuitarSet</a></li>
+<li><a href="#musdb18-hq">MUSDB18-HQ</a></li>
+<li><a href="#nsynth-google-magenta">NSynth (Google Magenta)</a></li>
+<li><a href="#sony-latent-diffusion-готовые-веса">Sony Latent Diffusion — готовые веса</a></li>
+<li><a href="#свои-пары-рекомендуется-для-phase-2a">Свои пары (рекомендуется для Phase 2A)</a></li>
+</ul>
+</li>
+<li><a href="#12-практические-проблемы">12. Практические проблемы</a><ul>
+<li><a href="#121-октавная-неоднозначность">12.1 Октавная неоднозначность</a></li>
+<li><a href="#122-фазовая-когерентность-субгармоники">12.2 Фазовая когерентность субгармоники</a></li>
+<li><a href="#123-синхронизация-пар">12.3 Синхронизация пар</a></li>
+<li><a href="#124-latency-budget">12.4 Latency budget</a></li>
+<li><a href="#126-daw-latency-compensation">12.6 DAW latency compensation</a></li>
+<li><a href="#125-inference-engines-для-juce-плагина">12.5 Inference engines для JUCE-плагина</a></li>
+</ul>
+</li>
+<li><a href="#13-ключевые-статьи">13. Ключевые статьи</a><ul>
+<li><a href="#pitch-detection">Pitch Detection</a></li>
+<li><a href="#neural-audio-synthesis">Neural Audio Synthesis</a></li>
+<li><a href="#loss-functions-training">Loss Functions &amp; Training</a></li>
+<li><a href="#инструменты-репозитории">Инструменты / Репозитории</a></li>
+<li><a href="#датасеты-прямые-ссылки">Датасеты (прямые ссылки)</a></li>
+</ul>
+</li>
+<li><a href="#14-open-questions">14. Open Questions</a></li>
+<li><a href="#курс-для-освежения">Курс для освежения</a></li>
+</ul>
+</div>
+
+</nav>
+
+<main>
+  <div class="hero">
+    <h1>Эмуляция баса из гитарного сигнала</h1>
+    <div class="meta">
+      <span>WebSearch · May 2026</span>
+      <span>13 разделов</span>
+      <span>Источники верифицированы</span>
+    </div>
+  </div>
+
+  <h1 id="обзор-области-эмуляция-баса-из-гитарного-сигнала">Обзор области: эмуляция баса из гитарного сигнала<a class="headerlink" href="#обзор-области-эмуляция-баса-из-гитарного-сигнала" title="Permanent link">&para;</a></h1>
+<blockquote>
+<p>Документ для погружения в тему. Разбираем задачу, подходы, архитектуры,
+готовые решения, статьи и практические проблемы — с техническими деталями.
+Обновлено с WebSearch: май 2026. Источники верифицированы.</p>
+</blockquote>
+<hr />
+<h2 id="содержание">Содержание<a class="headerlink" href="#содержание" title="Permanent link">&para;</a></h2>
+<ol>
+<li><a href="#1-постановка-задачи">Постановка задачи</a></li>
+<li><a href="#2-физика-проблемы">Физика проблемы — почему это сложно</a></li>
+<li><a href="#3-карта-подходов">Карта подходов</a></li>
+<li><a href="#4-анализ-существующих-решений">Анализ существующих решений</a></li>
+<li><a href="#5-подход-a-rule-based-синтез-phase-1-реализован">Подход A: Rule-based синтез (Phase 1)</a></li>
+<li><a href="#6-подход-b-conditioned-ml-ddsp-style-главный-кандидат">Подход B: Conditioned ML — DDSP-style</a></li>
+<li><a href="#7-подход-c-end-to-end-waveform">Подход C: End-to-end waveform</a></li>
+<li><a href="#8-pitch-detection">Pitch Detection: алгоритмы</a></li>
+<li><a href="#9-neural-architectures">Neural Architectures: сравнение</a></li>
+<li><a href="#10-loss-functions">Loss Functions</a></li>
+<li><a href="#11-датасеты">Датасеты</a></li>
+<li><a href="#12-практические-проблемы">Практические проблемы</a></li>
+<li><a href="#13-ключевые-статьи">Ключевые статьи</a></li>
+</ol>
+<hr />
+<h2 id="1-постановка-задачи">1. Постановка задачи<a class="headerlink" href="#1-постановка-задачи" title="Permanent link">&para;</a></h2>
+<p>Мы хотим в реальном времени трансформировать сигнал электрогитары в сигнал
+электробаса. Не "добавить октаву снизу" (это делает любой октавер), а именно
+<strong>создать звук баса</strong> — с правильным тембром, атакой, артикуляцией.</p>
+<blockquote>
+<p><strong>Область применения:</strong> проект рассчитан исключительно на <strong>монофонную</strong> игру —
+одна нота в момент времени. Аккорды, двойные ноты и легато с перекрытием нот
+не поддерживаются ни в одной из фаз. Это осознанное ограничение скоупа.</p>
+</blockquote>
+<h3 id="что-значит-правильный-бас">Что значит "правильный бас"<a class="headerlink" href="#что-значит-правильный-бас" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>Гитара:                    Бас (желаемый результат):
+
+  Амплитуда                  Амплитуда
+  │  /\  /\  /\              │  /\    /\    /\
+  │ /  \/  \/  \             │ /  \  /  \  /  \
+  │/           \             │/    \/    \/    \
+  └────────────→ t           └──────────────────→ t
+  E2: 82 Гц                  E1: 41 Гц
+  период ≈ 12 мс             период ≈ 24 мс
+</code></pre></div>
+
+<p>Разница не только в октаве. У баса другой:
+- <strong>Спектральный баланс</strong> — акцент на фундаментале, меньше высоких гармоник
+- <strong>Атака</strong> — более мягкий "удар" пальцем/медиатором по толстой струне
+- <strong>Сустейн</strong> — дольше угасает, другой характер спада
+- <strong>Резонанс корпуса</strong> — другие резонансные частоты деки</p>
+<hr />
+<h2 id="2-физика-проблемы">2. Физика проблемы<a class="headerlink" href="#2-физика-проблемы" title="Permanent link">&para;</a></h2>
+<h3 id="21-почему-питч-детектировать-сложно-на-атаке">2.1 Почему питч детектировать сложно на атаке<a class="headerlink" href="#21-почему-питч-детектировать-сложно-на-атаке" title="Permanent link">&para;</a></h3>
+<p>Для <strong>робастной</strong> детекции через YIN нужно окно ≥ 2 полных периодов — на меньшем окне алгоритм неустойчив к шуму. Информационно-теоретический минимум ниже (~1 период), но на практике YIN требует 2–3. Это практическая граница метода, не физики.</p>
+<div class="highlight"><pre><span></span><code>Частота    Период    Нужно 3 периода    Задержка детекции
+───────────────────────────────────────────────────────────
+E1 (41 Гц) 24 мс          72 мс          ← бас: критично
+E2 (82 Гц) 12 мс          36 мс          ← нижняя гитара
+A2 (110 Гц) 9 мс          27 мс
+D3 (147 Гц) 7 мс          21 мс
+E4 (330 Гц) 3 мс           9 мс           ← верхняя струна гитары (high E)
+</code></pre></div>
+
+<blockquote>
+<p>"For a digital octaver to know what frequency is being played, it needs time
+to analyze the signal — even one period of a 40 Hz signal takes 25 milliseconds."</p>
+</blockquote>
+<p><strong>Цель проекта — два режима:</strong>
+- <strong>Real-time</strong> (во время записи): эмуляция баса с минимальной задержкой и точной атакой — гитарист слышит бас в мониторе пока играет
+- <strong>Offline</strong> (постпроцессинг): высококачественная эмуляция уже записанной гитарной партии без ограничений по латентности</p>
+<p>Задержка детекции на гитарном сигнале (E2, период 12 мс) вдвое меньше, чем на эквивалентной басовой ноте (E1, период 24 мс) — это важно именно для real-time режима.</p>
+<h3 id="22-природа-атаки-ноты">2.2 Природа атаки ноты<a class="headerlink" href="#22-природа-атаки-ноты" title="Permanent link">&para;</a></h3>
+<p>Первые 5–15 мс после удара медиатором — это <strong>широкополосный шум</strong>:
+- Высокочастотный клик от касания медиатора со струной
+- Ингармонические составляющие — струна ещё не колеблется периодично
+- Отражения от корпуса и звукоснимателя</p>
+<p>Исследование EURASIP 2024 по нейронному синтезу баса подтверждает:
+атаку правильнее моделировать как <strong>unvoiced</strong> (непериодический) сегмент,
+а сустейн — как voiced (периодический). Это именно то, что делает <code>pitchIsValid</code> флаг.</p>
+<blockquote>
+<p><strong>Замечание о sample rate.</strong> Проект использует 44.1 кГц (зафиксировано датасетом). При 44.1 кГц окно 1024 сэмплов = <strong>23.2 мс</strong>, и для E2 (82 Гц, период 12.2 мс) это лишь ~1.9 периода — на грани надёжности YIN. Для уверенной детекции E2 желательно окно 1536 сэмплов (~35 мс), либо переход на PESTO/SwiftF0 в Phase 2.</p>
+<p><strong><code>pitchIsValid</code></strong> — булев флаг в YIN детекторе. YIN возвращает F0 только если
+его внутренняя метрика уверенности (CMNDF minimum) ниже порога (0.15 в текущей реализации).
+На атаке ноты, пока сигнал ещё не периодический, YIN выдаёт низкую уверенность →
+<code>pitchIsValid = false</code> → осциллятор молчит или удерживает последний известный питч,
+вместо того чтобы генерировать бас на неверной частоте.
+Как только сигнал стабилизируется (обычно через 1–3 фрейма YIN, т.е. ~21–63 мс),
+уверенность растёт → <code>pitchIsValid = true</code> → бас включается на правильной ноте.</p>
+</blockquote>
+<h3 id="23-субгармоника-f₀2-проблема-синтеза">2.3 Субгармоника f₀/2 — проблема синтеза<a class="headerlink" href="#23-субгармоника-f₀2-проблема-синтеза" title="Permanent link">&para;</a></h3>
+<p>Бас звучит на октаву ниже гитары. F₀/2 — это <strong>субгармоника</strong>, <strong>практически отсутствующая</strong> в чистом гитарном сигнале (типичный уровень &lt;-60 дБ от F₀ за счёт слабой нелинейности струны и связности мод). Её нельзя создать линейным фильтром, и она ниже шумового пола тракта — для синтеза баса её нужно <strong>сгенерировать заново</strong>.</p>
+<div class="highlight"><pre><span></span><code>Гитара E2:  F₀=82Гц + 164 + 246 + 328 + ...  (гармоники)
+Бас E1:     F₀=41Гц + 82 + 123 + 164 + ...   (другой фундаментал)
+                ↑
+         Этой частоты нет во входном сигнале!
+</code></pre></div>
+
+<details>
+<summary>Почему линейный фильтр не может создать F₀/2 — теория</summary>
+<p><strong>Фундаментальное свойство линейных систем (LTI)</strong></p>
+<p>Линейный фильтр описывается в частотной области как умножение:</p>
+<div class="highlight"><pre><span></span><code>Y(f) = H(f) × X(f)
+</code></pre></div>
+
+<p>где <code>X(f)</code> — спектр входа, <code>H(f)</code> — АЧХ фильтра, <code>Y(f)</code> — спектр выхода.</p>
+<p>Если в <code>X(f)</code> нет энергии на частоте <code>f₀</code>, то <code>H(f₀) × 0 = 0</code> — какую АЧХ ни выбери, на этой частоте на выходе будет ноль. Гитарный сигнал E2 содержит 82, 164, 246, 328 Гц и т.д., но <strong>41 Гц там нет</strong>. Значит, ни один линейный фильтр не создаст 41 Гц из этого сигнала.</p>
+<p><strong>Почему струна не колеблется на субгармонике</strong></p>
+<p>Струна, зажатая на определённой длине, колеблется на частотах, кратных фундаментальной: F₀, 2F₀, 3F₀... (стоячие волны). Субгармоники (F₀/2, F₀/3) потребовали бы, чтобы длина волны была <em>больше</em>, чем дважды длина струны — такие моды физически невозможны при жёстких граничных условиях на ладу и бридже. В редких случаях параметрического резонанса субгармоники появляются, но это нелинейный эффект и он незначителен.</p>
+<p><strong>Что делают нелинейные решения</strong></p>
+<p>Аналоговый октавер (Boss OC-2): компаратор детектирует нулевые переходы, аналоговый делитель частоты (CD4013-style) формирует сигнал на f₀/2 — нелинейная операция (компаратор) внутри аналогового тракта, не линейная фильтрация.</p>
+<p>Нейросеть: нелинейные активационные функции (ReLU, tanh) позволяют модели синтезировать частоты, которых нет во входе — она учится генерировать периодический сигнал на F₀/2, фазово привязанный к входу. Это и делает задачу нетривиальной: нужно не просто «отфильтровать» что-то существующее, а <strong>сгенерировать</strong> новый сигнал.</p>
+<p><strong>Итог для проекта</strong></p>
+<p>Phase 1 (sawtooth) обходит проблему детерминированно: осциллятор просто генерирует F₀/2 независимо от входного сигнала, используя питч как единственный параметр. Нейросеть (Phase 2) должна решить более сложную задачу: синтезировать реалистичный бас с правильной фазой, тембром и атакой — и это возможно только благодаря нелинейности архитектуры.</p>
+</details>
+<hr />
+<h2 id="3-карта-подходов">3. Карта подходов<a class="headerlink" href="#3-карта-подходов" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>                    ЗАДАЧА: guitar waveform → bass waveform
+
+  ┌─────────────────────────────────────────────────────────────────┐
+  │  ЯВНЫЙ PITCH DETECTION + СИНТЕЗ          реал-тайм, &lt; 30 мс    │
+  │                                                                  │
+  │  Phase 1 — Rule-based          Phase 2A — Conditioned ML        │
+  │  ─────────────────────         ──────────────────────────────   │
+  │  YIN → F₀ → sawtooth(F₀/2)    YIN → F₀ → DDSP-синтезатор      │
+  │  LadderFilter формирует тембр  нейросеть предсказывает тембр    │
+  │  детерминировано, без ML       DDSP / F₀-conditioned CNN/GRU    │
+  └─────────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────────────┐
+  │  END-TO-END НЕЙРОСЕТЬ                    реал-тайм, &lt; 50 мс    │
+  │                                                                  │
+  │  Phase 2B — waveform-to-waveform без явного pitch detection     │
+  │  TCN (дилатированные свёртки) — быстро, но фаза некогерентна   │
+  │  GRU (рекуррентная) — когерентная фаза, предпочтительна        │
+  │  RAVE (VAE real-time) — компромисс качество/задержка            │
+  └─────────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────────────┐
+  │  GENERATIVE (OFFLINE)                    постпроцессинг         │
+  │                                                                  │
+  │  Phase 3 — без ограничений по латентности                       │
+  │  DDSP + диффузия                                                │
+  │  WaveTransfer (Lavault et al., MLSP 2024) — непарные данные     │
+  │  Sony Diffusion Bridges (ICASSP 2025) — unsupervised            │
+  └─────────────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<h3 id="сравнение-подходов">Сравнение подходов<a class="headerlink" href="#сравнение-подходов" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Критерий</th>
+<th>Rule-based</th>
+<th>Conditioned ML</th>
+<th>End-to-end</th>
+<th>Diffusion</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Контроль атаки</td>
+<td>Явный</td>
+<td>Явный</td>
+<td>Имплицитный</td>
+<td>Имплицитный</td>
+</tr>
+<tr>
+<td>Качество тембра</td>
+<td>Синтетично</td>
+<td>Реалистично</td>
+<td>Реалистично</td>
+<td>Отлично</td>
+</tr>
+<tr>
+<td>Сложность обучения</td>
+<td>—</td>
+<td>Средняя</td>
+<td>Высокая</td>
+<td>Очень высокая</td>
+</tr>
+<tr>
+<td>Парные данные нужны?</td>
+<td>—</td>
+<td>Да</td>
+<td>Да</td>
+<td><strong>Нет</strong></td>
+</tr>
+<tr>
+<td>Real-time (steady-state)</td>
+<td>Да (~5 мс)</td>
+<td>Да (~10–30 мс)</td>
+<td>Да (~10–50 мс)</td>
+<td>Нет</td>
+</tr>
+<tr>
+<td>Задержка до первой ноты</td>
+<td>~23 мс (YIN)</td>
+<td>5–10 мс (PESTO)</td>
+<td>зависит от окна</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Интерпретируемость</td>
+<td>Полная</td>
+<td>Частичная</td>
+<td>Нет</td>
+<td>Нет</td>
+</tr>
+</tbody>
+</table>
+<h3 id="расшифровка-терминов">Расшифровка терминов<a class="headerlink" href="#расшифровка-терминов" title="Permanent link">&para;</a></h3>
+<h4 id="phase-1-rule-based-sawtooth-ladderfilter">Phase 1 — Rule-based: sawtooth + LadderFilter<a class="headerlink" href="#phase-1-rule-based-sawtooth-ladderfilter" title="Permanent link">&para;</a></h4>
+<p><strong>Sawtooth-осциллятор</strong> генерирует пилообразную волну на частоте F₀/2. Пила выбрана намеренно: её спектр содержит все гармоники (F₀/2, F₀, 3F₀/2, 2F₀...) с амплитудой 1/n — это формантная структура, характерная для баса со смычковым/пальцевым возбуждением. Потом фильтр её формирует.</p>
+<p><strong>LadderFilter</strong> — цифровая эмуляция Moog Ladder Filter, 4-полюсный LPF с крутизной 24 дБ/октаву. Классический звук аналогового синтезатора баса: параметр <code>resonance</code> добавляет характерный "горб" на частоте среза. В JUCE это <code>juce::dsp::LadderFilter</code>.</p>
+<p>Пайплайн: YIN детектирует F₀ → осциллятор бьёт на F₀/2 → LadderFilter (cutoff ≈ 800 Гц, res ≈ 0.3) срезает верхние гармоники → огибающая следует за амплитудой входа. Полностью детерминировано, нет обучения.</p>
+<h4 id="phase-2a-conditioned-ml-ddsp-style">Phase 2A — Conditioned ML (DDSP-style)<a class="headerlink" href="#phase-2a-conditioned-ml-ddsp-style" title="Permanent link">&para;</a></h4>
+<p><strong>DDSP (Differentiable Digital Signal Processing, Engel et al. 2020)</strong> — ключевая идея: DSP-блоки (осцилляторы, фильтры, реверберация) встраиваются в граф обратного распространения как дифференцируемые операции. Нейросеть не синтезирует сэмплы напрямую — она предсказывает <em>параметры</em> для физически осмысленных DSP-блоков. Результат: гораздо меньше параметров сети, музыкально интерпретируемые латентные переменные, стабильное обучение.</p>
+<p>В нашем контексте: явный pitch-детектор (YIN/PESTO) даёт F₀. Нейросеть получает F₀ + loudness и предсказывает спектральную огибающую баса (тип удара, гармонический баланс, характер атаки). DDSP-синтезатор генерирует звук из этих параметров. Атака управляется детерминировано — слабость гранулярных питч-шифтеров устранена.</p>
+<h4 id="phase-2b-end-to-end-нейросеть">Phase 2B — End-to-end нейросеть<a class="headerlink" href="#phase-2b-end-to-end-нейросеть" title="Permanent link">&para;</a></h4>
+<p><strong>TCN (Temporal Convolutional Network)</strong> — стек дилатированных каузальных свёрток. Дилатация экспоненциально растёт (1, 2, 4, 8, 16...), поэтому рецептивное поле покрывает сотни миллисекунд при небольшом числе параметров. Stateless: каждый буфер обрабатывается независимо. Проблема для нашей задачи: фаза субгармоники F₀/2 между соседними чанками не синхронизирована → слышны артефакты "дёргания".</p>
+<p><strong>GRU (Gated Recurrent Unit)</strong> — рекуррентная архитектура, сохраняет скрытое состояние между буферами. Решает проблему TCN: скрытое состояние несёт информацию о фазе субгармоники, поэтому на границе буферов фаза F₀/2 продолжается плавно, без разрывов. На слух разница между TCN и GRU — щелчки/гребёнка на стыках чанков у TCN против чистого легато у GRU.</p>
+<p><strong>RAVE (Realtime Audio Variational autoEncoder, Caillon &amp; Esling 2021)</strong> — VAE, обученный в двух режимах: сначала в частотной области (обучение стабильно), потом fine-tune adversarial в waveform домене. Латентное пространство имеет небольшую размерность (8–16), что позволяет real-time инференс с задержкой ~26 мс. Хорошо подходит для тембрального переноса: гитарный waveform → латент → декодер баса.</p>
+<h4 id="phase-3-generative-offline">Phase 3 — Generative (offline)<a class="headerlink" href="#phase-3-generative-offline" title="Permanent link">&para;</a></h4>
+<p><strong>WaveTransfer (Lavault et al. 2022)</strong> — score-based диффузионная модель тембрального переноса в waveform домене, 44.1 kHz. Контент (мелодия, ритм) берётся из одного источника, тембр — из другого. Работает с <em>непарными</em> данными: не нужны синхронизированные пары guitar/bass, достаточно отдельных корпусов каждого инструмента.</p>
+<p><strong>Sony Latent Diffusion Bridges (ICASSP 2025)</strong> — unsupervised timbre transfer через диффузионные мосты (Schrödinger Bridge) в латентном пространстве audio codec. Encoder сжимает в латент, диффузионный мост переводит из "гитарного" распределения в "басовое", декодер генерирует waveform. Полностью unsupervised, качество — state of the art на 2025 год.</p>
+<hr />
+<h2 id="4-анализ-существующих-решений">4. Анализ существующих решений<a class="headerlink" href="#4-анализ-существующих-решений" title="Permanent link">&para;</a></h2>
+<h3 id="41-hardware">4.1 Hardware<a class="headerlink" href="#41-hardware" title="Permanent link">&para;</a></h3>
+<p><strong>Boss OC-2 (аналог, 1982)</strong>
+Аналоговый делитель частоты на компараторах. Минимальная задержка — один полупериод (~6 мс для E2, ~12 мс для E1). Синтетический звук, требует чистого монофонного сигнала.</p>
+<p><strong>EHX POG / POG2</strong>
+Цифровой pitch shifter на гранулярном анализе. Задержка ~10–20 мс.
+"Водянистая" атака из-за несовпадения гранулы с транзиентом.</p>
+<p><strong>Hotone Ampero Stomp</strong>
+Тот же гранулярный алгоритм. Нет режима "монофонный бас-синтезатор".</p>
+<h3 id="42-software">4.2 Software<a class="headerlink" href="#42-software" title="Permanent link">&para;</a></h3>
+<p><strong>Guitar Rig (Native Instruments) — Pitch Pedal</strong></p>
+<p>Sweetwater документирует явно:</p>
+<blockquote>
+<p>"Reverb, delay, or modulation effects before it will likely cause the
+pitch-tracking circuitry to become confused."
+(<a href="https://www.sweetwater.com/insync/cautions-octaver-feature-guitar-rig-3/">sweetwater.com, Guitar Rig 3 Oktaver</a>)</p>
+</blockquote>
+<p>Работает только на одиночных нотах, чувствителен к позиции в цепочке эффектов.</p>
+<p><strong>Line 6 Helix — Pitch Glide / Simple Pitch</strong>
+Полифонический pitch shifter, не монофонный F0-трекер. "Размытая" атака
+из-за гранулярного алгоритма. Нет режима "перепитчинг через синтез".</p>
+<p><strong>Neural DSP</strong>
+Предлагает только amp/cab сим для реального баса (Darkglass Ultra, Parallax).
+Никакого guitar-to-bass conversion нет.
+(<a href="https://neuraldsp.com/pages/bass-plugins">neuraldsp.com/pages/bass-plugins</a>)</p>
+<h3 id="43-рыночный-gap-подтверждён-живыми-форумами-20222025">4.3 Рыночный gap подтверждён живыми форумами (2022–2025)<a class="headerlink" href="#43-рыночный-gap-подтверждён-живыми-форумами-20222025" title="Permanent link">&para;</a></h3>
+<p>На The Gear Forum существует тред с прямым вопросом:</p>
+<blockquote>
+<p>"Plugin For Making A Guitar Sound Like A Bass (No Latency)?"
+(<a href="https://thegearforum.com/threads/plugin-for-making-a-guitar-sound-like-a-bass-no-latency.3523/">thegearforum.com</a>)</p>
+</blockquote>
+<p>KVR Audio — сообщество стабильно откатывается к "pitch shift + bass amp sim"
+как лучшей доступной опции, признавая артефакт атаки как "принятый компромисс".</p>
+<p><strong>Вывод: ни один коммерческий или open-source плагин в 2022–2025 не решил проблему onset-aware pitch detection для guitar-to-bass.</strong></p>
+<h3 id="45-общий-механизм-сбоя">4.5 Общий механизм сбоя<a class="headerlink" href="#45-общий-механизм-сбоя" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>Проблема pitch-tracking решений (Boss OC-2, Guitar Rig, Ampero) — одна и та же:
+
+  Детектор              Синтезатор
+  ────────              ──────────
+  &quot;Не знаю питч&quot;   →   Молчит / держит старый питч
+
+  Причина: период баса = 12–24 мс, нужно 3 периода → задержка 36–72 мс
+
+  Подход проекта:
+  ───────────────
+  Детекция на гитаре (период 6–12 мс) → задержка 18–36 мс
+  + pitchIsValid gate → нет артефактов пока F0 нестабилен
+</code></pre></div>
+
+<p>EHX POG (granular/phase-vocoder) обходит pitch detection полностью, но платит другую цену — «watery» атака из-за FFT-окна (§4.2).</p>
+<h3 id="44-gap-анализ-пять-проблем-и-кто-их-решает">4.4 Gap-анализ: пять проблем и кто их решает<a class="headerlink" href="#44-gap-анализ-пять-проблем-и-кто-их-решает" title="Permanent link">&para;</a></h3>
+<p>Конкуренты решают разные подмножества задач. Полная карта проблем П1–П5.</p>
+<p><strong>Проблема 1 — Эмуляция атаки:</strong> перкуссивный характер первого слога, тембр удара пальца/медиатора о струну.</p>
+<p><strong>Проблема 2 — Глитчинг / плохой трекинг:</strong> неправильные ноты, шум и артефакты пока сигнал на атаке нестабилен или на низких нотах.</p>
+<p><strong>Проблема 3 — Качество тембра в целом:</strong> реалистичность сустейна, гармонический баланс, характер баса.</p>
+<p><strong>Проблема 4 — Октавная неоднозначность:</strong> pitch detector систематически детектирует F₀/2 вместо F₀ (или 2F₀ в обратную сторону). Подробности и решение — §12.1.</p>
+<p><strong>Проблема 5 — Сустейн и затухание:</strong> у баса другой envelope сустейна — дольше угасает, другой характер спада. Огибающая, снятая с гитарного сигнала, этого не воспроизводит.</p>
+<table>
+<thead>
+<tr>
+<th>Решение</th>
+<th>П1 (атака)</th>
+<th>П2 (глитч)</th>
+<th>П3 (тембр)</th>
+<th>П4 (октава)</th>
+<th>П5 (сустейн)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Boss OC-2</td>
+<td>Нет</td>
+<td>Нет</td>
+<td>Нет</td>
+<td>Частично*</td>
+<td>Нет</td>
+</tr>
+<tr>
+<td>EHX POG (phase vocoder)</td>
+<td>Нет — "watery"</td>
+<td>Обойдена</td>
+<td>Частично</td>
+<td>Н/П**</td>
+<td>Нет</td>
+</tr>
+<tr>
+<td>Guitar Rig pitch pedal</td>
+<td>Нет</td>
+<td>Нет</td>
+<td>Нет</td>
+<td>Частично*</td>
+<td>Нет</td>
+</tr>
+<tr>
+<td><strong>Phase 1 (наш, реализован)</strong></td>
+<td>Частично</td>
+<td><strong>Решена</strong></td>
+<td>Нет</td>
+<td><strong>Решена</strong></td>
+<td>Нет</td>
+</tr>
+<tr>
+<td><strong>Phase 2A (DDSP-style)</strong></td>
+<td><strong>Решена</strong></td>
+<td><strong>Решена</strong></td>
+<td><strong>Решена</strong></td>
+<td><strong>Решена</strong></td>
+<td><strong>Решена</strong></td>
+</tr>
+<tr>
+<td><strong>Phase 2B (end-to-end)</strong></td>
+<td><strong>Решена</strong></td>
+<td>Обойдена</td>
+<td><strong>Решена</strong></td>
+<td>Обойдена</td>
+<td><strong>Решена</strong></td>
+</tr>
+<tr>
+<td><strong>Phase 3 (generative)</strong></td>
+<td><strong>Решена</strong></td>
+<td>Обойдена</td>
+<td><strong>Решена</strong></td>
+<td>Обойдена</td>
+<td><strong>Решена</strong></td>
+</tr>
+</tbody>
+</table>
+<p><em>* Частично — диапазон ограничен, но систематические ошибки возможны.</em>
+<em>** Н/П — не применимо, pitch detection отсутствует.</em></p>
+<p><strong>Ключевые наблюдения:</strong></p>
+<p>EHX POG решает П2 через отказ от pitch tracking, но жертвует П1 — "watery" атак является прямым следствием FFT-окна. Монофонные октаверы не решают ни П1, ни П2. Никто из конкурентов не решил П3 и П5 для задачи guitar-to-bass.</p>
+<p>Наша дифференциация в Phase 1: <code>pitchIsValid</code> + ограничение диапазона (70–1300 Гц) закрывают П2 и П4 без ущерба для П1. Phase 2 закрывает все пять проблем.</p>
+<hr />
+<h2 id="5-подход-a-rule-based-синтез-phase-1-реализован">5. Подход A: Rule-based синтез (Phase 1, реализован)<a class="headerlink" href="#5-подход-a-rule-based-синтез-phase-1-реализован" title="Permanent link">&para;</a></h2>
+<h3 id="принцип">Принцип<a class="headerlink" href="#принцип" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>  [Guitar in] ──→ [YIN] ──→ F0 ──→ [×0.5] ──→ [Sawtooth OSC] ──→
+                                                                    [EnvFollower] ──→ [LadderFilter LPF] ──→ [mix] ──→ out
+  [Guitar in] ──────────────────────────────────────────────────→
+</code></pre></div>
+
+<h3 id="плюсы">Плюсы<a class="headerlink" href="#плюсы" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Нулевая задержка между атакой и синтезом</li>
+<li>Питч математически гарантирован</li>
+<li>Полный контроль через параметры</li>
+</ul>
+<h3 id="минусы">Минусы<a class="headerlink" href="#минусы" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Тембр механический, синтетический</li>
+<li>Атака нереалистична — огибающая с гитары ≠ огибающая реального баса</li>
+<li>Dry-passthrough на первые ~23 мс (<code>pitchIsValid=false</code>) — гитарист слышит свой сигнал, не молчание. При <code>dryWet=1.0</code> первый бит ноты звучит как гитара, не как бас</li>
+<li>Aliasing sawtooth на высоких нотах: 128-точечный lookup без band-limiting, на F₀/2 &gt; 500 Гц слышны нелинейные искажения от свёрнутых гармоник. Решение: PolyBLEP осциллятор</li>
+</ul>
+<hr />
+<h2 id="6-подход-b-conditioned-ml-ddsp-style-главный-кандидат">6. Подход B: Conditioned ML (DDSP-style) — главный кандидат<a class="headerlink" href="#6-подход-b-conditioned-ml-ddsp-style-главный-кандидат" title="Permanent link">&para;</a></h2>
+<blockquote>
+<p><strong>Текущий статус:</strong> Phase 2 началась с end-to-end baseline (WaveConvNet, §7.0) для отладки пайплайна и датасета. Conditioned ML — следующая итерация (v2 в ROADMAP), приоритетная для финальной модели.</p>
+</blockquote>
+<h3 id="идея-разделить-задачи">Идея: разделить задачи<a class="headerlink" href="#идея-разделить-задачи" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>guitar ──→ [Pitch Detector] ──→ F0 ──→ [f₀/2 synth] ──→ synth_bass ──┐
+                                                                         ├──→ [Neural Network] ──→ realistic_bass
+guitar ───────────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<p>Нейросеть видит <code>(guitar, synth_bass)</code> и учится <strong>только тембровой трансформации</strong>.</p>
+<h3 id="ddsp-differentiable-digital-signal-processing">DDSP (Differentiable Digital Signal Processing)<a class="headerlink" href="#ddsp-differentiable-digital-signal-processing" title="Permanent link">&para;</a></h3>
+<p><strong>Статья:</strong> Engel et al., ICLR 2020 — <a href="https://arxiv.org/abs/2001.04643">arXiv:2001.04643</a></p>
+<p>Синтезатор (осциллятор + шум + фильтр) встроен в нейросеть как дифференцируемый модуль.
+Сеть предсказывает <strong>параметры синтезатора</strong>: частоты, амплитуды гармоник, шум.</p>
+<div class="highlight"><pre><span></span><code>  Conditioning: [F0, Loudness] ─→ [Small NN] ─→ [harm. amps] ─→ [Harm. Synth] ─┐
+                                              └→ [noise mag]  ─→ [Filtered Noise]─┤ → audio
+                                              └→ [reverb IR]  ─→ [Reverb]─────────┘
+</code></pre></div>
+
+<p><strong>Hayes et al. 2023 — DDSP обзор:</strong> <a href="https://arxiv.org/pdf/2308.15422">arXiv:2308.15422</a>
+Комплексный survey всех DDSP-вариантов до 2023. Обязательно для Phase 2 планирования.</p>
+<p><strong>DDSP Guitar Waveform Synthesis (2023):</strong> <a href="https://arxiv.org/abs/2309.07658">arXiv:2309.07658</a>
+MIDI-conditioned DDSP синтез гитарного звука — прямой аналог для F0-conditioned синтеза баса.</p>
+<h3 id="newt-neural-waveshaping-synthesis">NEWT (Neural Waveshaping Synthesis)<a class="headerlink" href="#newt-neural-waveshaping-synthesis" title="Permanent link">&para;</a></h3>
+<p><strong>Статья:</strong> Hayes et al., ISMIR 2021 — <a href="https://arxiv.org/abs/2107.05050">arXiv:2107.05050</a>
+<strong>GitHub:</strong> <a href="https://github.com/ben-hayes/neural-waveshaping-synthesis">ben-hayes/neural-waveshaping-synthesis</a></p>
+<p>Waveform-domain: MLP с периодическими активациями учит нелинейную waveshaping функцию.
+<strong>260k параметров</strong>, FastNEWT работает в RT на CPU. Самый быстрый neural timbre transfer.
+Conditioned на F0 + loudness — аналогично DDSP, но в waveform домене.</p>
+<h3 id="плюсы-conditioned-ml">Плюсы Conditioned ML<a class="headerlink" href="#плюсы-conditioned-ml" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Фазовая когерентность гарантирована осциллятором</li>
+<li>Сеть решает более простую задачу → быстрее сходится, меньше данных</li>
+<li>Можно отключить ML и слышать "чистый" синтез</li>
+<li>Realtime реалистичен с небольшой моделью</li>
+</ul>
+<h3 id="минусы_1">Минусы<a class="headerlink" href="#минусы_1" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Зависит от качества pitch detector</li>
+<li>Нужны парные данные <code>(guitar, real_bass)</code></li>
+</ul>
+<hr />
+<h2 id="7-подход-c-end-to-end-waveform">7. Подход C: End-to-end waveform<a class="headerlink" href="#7-подход-c-end-to-end-waveform" title="Permanent link">&para;</a></h2>
+<h3 id="70-текущий-baseline-waveconvnet-v0">7.0 Текущий baseline: WaveConvNet (v0)<a class="headerlink" href="#70-текущий-baseline-waveconvnet-v0" title="Permanent link">&para;</a></h3>
+<p>В <code>ml/nn_architectures/bassnet.py</code> реализован <strong>WaveConvNet</strong> — stateless 1D CNN в waveform domain, обучаемый MultiScaleSTFTLoss. Это сознательно простая baseline-архитектура для проверки пайплайна и датасета. Задача baseline — не SOTA, а:
+- проверить что обучение сходится на ~10–15 мин синхронных пар
+- выявить узкие места датасета (атака, тембр, артефакты)
+- дать опорную точку для сравнения с Phase 2A/2B/3</p>
+<p>WaveConvNet — stateless (TCN-стиль), фазовая когерентность субгармоники не гарантирована. Это известное ограничение baseline. См. ROADMAP.md — итерации v0→v4.</p>
+<h3 id="tcn-temporal-convolutional-network">TCN (Temporal Convolutional Network)<a class="headerlink" href="#tcn-temporal-convolutional-network" title="Permanent link">&para;</a></h3>
+<p><strong>Статья:</strong> Wright et al. 2020 — <a href="https://www.mdpi.com/2076-3417/10/3/766">Applied Sciences 10(3):766</a></p>
+<p>Дилятированные свёртки дают большой receptive field при низком числе параметров.
+Используется в amp-sim плагинах. При наивной реализации — каждый буфер обрабатывается с нуля без кэширования входов через receptive field, фаза субгармоники между чанками рассинхронизируется. Это не архитектурный приговор: <strong>streaming-TCN с ring-buffer входов</strong> (так делают amp-sim плагины на RTNeural) даёт когерентную фазу.</p>
+<p><strong>RTNeural — важное ограничение (2024):</strong>
+Conv1D не поддерживает параметр <code>groups</code> (issue #114) → depthwise-separable свёртки
+(часто используемые в эффективных TCN) нельзя использовать напрямую.</p>
+<h3 id="gru-lstm">GRU / LSTM<a class="headerlink" href="#gru-lstm" title="Permanent link">&para;</a></h3>
+<p>Прямая память между processBlock вызовами через hidden state.
+Правильная архитектура для фазовой когерентности субгармоники.
+RTNeural поддерживает GRU и LSTM (JSON weights → C++ inference).</p>
+<h3 id="rave-vae">RAVE (VAE)<a class="headerlink" href="#rave-vae" title="Permanent link">&para;</a></h3>
+<p><strong>Статья:</strong> Caillon &amp; Esling 2021 — <a href="https://arxiv.org/abs/2111.05011">arXiv:2111.05011</a>
+<strong>GitHub:</strong> <a href="https://github.com/acids-ircam/RAVE">acids-ircam/RAVE</a></p>
+<p>VAE, каузальная архитектура → стриминговый RT на CPU. 26 мс алгоритмическая задержка.
+Для timbre transfer: latent space navigation или fine-tuning на парах guitar/bass.</p>
+<h3 id="scyclone-референсная-реализация-rave-timbre-transfer-в-juce">Scyclone — референсная реализация RAVE timbre transfer в JUCE ⭐<a class="headerlink" href="#scyclone-референсная-реализация-rave-timbre-transfer-в-juce" title="Permanent link">&para;</a></h3>
+<p><strong>GitHub:</strong> <a href="https://github.com/Torsion-Audio/Scyclone">Torsion-Audio/Scyclone</a> (от авторов ANIRA и iPlug2)</p>
+<p>Готовый VST3/AU плагин тембрального переноса на базе RAVE. Прямой референс для нашего Phase 2B/3:</p>
+<ul>
+<li><strong>Архитектура:</strong> RAVE (VAE) — обучается на аудио без парных данных</li>
+<li><strong>Инференс:</strong> ONNX со статической линковкой — никаких runtime зависимостей, production-grade</li>
+<li><strong>Transient Controller:</strong> явный модуль управления атакой/сустейном + grain delay + компрессор постпроцессинг — та же проблема атаки, те же решения</li>
+<li><strong>Два-модельный режим:</strong> blend между двумя тембрами в реальном времени</li>
+</ul>
+<p>Код обучения в отдельном репо <a href="https://github.com/Torsion-Audio/Scyclone-AI">Torsion-Audio/Scyclone-AI</a>. Паттерн RAVE + ONNX в JUCE можно взять напрямую и дообучить на guitar/bass парах.</p>
+<h3 id="диффузионные-модели-20242025-новейший-фронтир">Диффузионные модели (2024–2025, новейший фронтир)<a class="headerlink" href="#диффузионные-модели-20242025-новейший-фронтир" title="Permanent link">&para;</a></h3>
+<h4 id="wavetransfer-mlsp-2024">WaveTransfer (MLSP 2024)<a class="headerlink" href="#wavetransfer-mlsp-2024" title="Permanent link">&para;</a></h4>
+<p><strong>Статья:</strong> <a href="https://arxiv.org/abs/2409.15321">arXiv:2409.15321</a>
+<strong>GitHub:</strong> <a href="https://github.com/WaveTransfer/WaveTransfer">WaveTransfer/WaveTransfer</a></p>
+<p>Диффузионная модель (BDDM-based) для timbre transfer прямо на waveform.
+- <strong>44.1 кГц</strong> — первый диффузионный подход на этой частоте дискретизации
+- Один model handles multiple instrument pairs (без retraining)
+- <strong>Непарные данные</strong> — не нужны синхронные guitar/bass записи
+- Offline only</p>
+<h4 id="latent-diffusion-bridges-sony-ai-aalto-icassp-2025">Latent Diffusion Bridges (Sony AI / Aalto, ICASSP 2025)<a class="headerlink" href="#latent-diffusion-bridges-sony-ai-aalto-icassp-2025" title="Permanent link">&para;</a></h4>
+<p><strong>Статья:</strong> <a href="https://arxiv.org/abs/2409.06096">arXiv:2409.06096</a>
+<strong>Demo:</strong> <a href="https://sony.github.io/diffusion-timbre-transfer/">sony.github.io/diffusion-timbre-transfer</a>
+<strong>Веса:</strong> <a href="https://zenodo.org/records/13840360">zenodo.org/records/13840360</a></p>
+<p>Dual diffusion bridge: source model → Gaussian prior → target model.
+- Полностью <strong>unsupervised</strong> (unpaired training)
+- Параметр σ (noise level) управляет балансом тембр/мелодия
+- Обучен на CocoChorales (монофонные инструменты)
+- Лучший FAD среди unsupervised методов на 2025</p>
+<h4 id="guitar-tone-morphing-by-diffusion-октябрь-2025">Guitar Tone Morphing by Diffusion (октябрь 2025)<a class="headerlink" href="#guitar-tone-morphing-by-diffusion-октябрь-2025" title="Permanent link">&para;</a></h4>
+<p><strong>Статья:</strong> <a href="https://arxiv.org/html/2510.07908v1">arXiv:2510.07908</a>
+Диффузионное морфирование гитарного тона — свежайшая работа.</p>
+<h3 id="плюсы-end-to-end">Плюсы end-to-end<a class="headerlink" href="#плюсы-end-to-end" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Диффузионные методы работают на непарных данных</li>
+<li>Нет зависимости от pitch detector</li>
+<li>Потенциально лучший тембр</li>
+</ul>
+<h3 id="минусы_2">Минусы<a class="headerlink" href="#минусы_2" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Все диффузионные методы — offline only (сотни мс или секунды)</li>
+<li>End-to-end RT (TCN/GRU) требует больших парных датасетов</li>
+<li>Октавная неоднозначность на атаке</li>
+</ul>
+<hr />
+<h2 id="8-pitch-detection">8. Pitch Detection<a class="headerlink" href="#8-pitch-detection" title="Permanent link">&para;</a></h2>
+<h3 id="алгоритмы-детальный-разбор">Алгоритмы: детальный разбор<a class="headerlink" href="#алгоритмы-детальный-разбор" title="Permanent link">&para;</a></h3>
+<h4 id="yin-de-cheveigné-kawahara-2002">YIN (de Cheveigné &amp; Kawahara, 2002)<a class="headerlink" href="#yin-de-cheveigné-kawahara-2002" title="Permanent link">&para;</a></h4>
+<p><a href="https://doi.org/10.1121/1.1458024">JASA 2002</a> — Текущая реализация.</p>
+<p>CMNDF на squared difference function (математически связана с autocorrelation, но не идентична). Требует 2–3 полных периода → задержка ~23–46 мс на гитаре при 44.1 кГц.
+<code>pitchIsValid</code> флаг маскирует ложные результаты на транзиентах.</p>
+<h4 id="pyin-mauch-dixon-icassp-2014">PYIN (Mauch &amp; Dixon, ICASSP 2014)<a class="headerlink" href="#pyin-mauch-dixon-icassp-2014" title="Permanent link">&para;</a></h4>
+<p>HMM поверх YIN. Лучше на сустейне, хуже на атаке — HMM сглаживает вместо snapping.
+50–100 мс lookahead. Не подходит для RT onset-tracking.</p>
+<h4 id="crepe-kim-et-al-icassp-2018">CREPE (Kim et al., ICASSP 2018)<a class="headerlink" href="#crepe-kim-et-al-icassp-2018" title="Permanent link">&para;</a></h4>
+<p><a href="https://arxiv.org/abs/1802.06182">arXiv:1802.06182</a> / <a href="https://github.com/maxrmorrison/torchcrepe">torchcrepe</a></p>
+<p>Deep CNN, окно 1024 @ 16 кГц = 64 мс. Minimum usable window что лучше YIN на транзиентах — практически нет. Слишком большое окно.</p>
+<h4 id="fcnf0-ardaillon-roebel-smc-2019">FCNF0 (Ardaillon &amp; Roebel, SMC 2019)<a class="headerlink" href="#fcnf0-ardaillon-roebel-smc-2019" title="Permanent link">&para;</a></h4>
+<p><a href="https://github.com/ardaillon/FCN-f0">GitHub FCN-f0</a></p>
+<p><strong>Важное уточнение из WebSearch:</strong> обучен только на speech, плохо работает на музыкальных инструментах out-of-box. Checkpoint используется внутри PENN. Нет официального ONNX экспорта.</p>
+<h4 id="penn-morrison-et-al-icassp-2023">PENN (Morrison et al., ICASSP 2023)<a class="headerlink" href="#penn-morrison-et-al-icassp-2023" title="Permanent link">&para;</a></h4>
+<p><a href="https://arxiv.org/abs/2301.12258">arXiv:2301.12258</a> / <a href="https://github.com/interactiveaudiolab/penn">GitHub penn</a></p>
+<p>1440 bins, 5-cent resolution, entropy-based periodicity.
+CPU: <strong>11.2x faster than real-time</strong> на i9-9820X, 408x на RTX 3090.
+Pip-installable. <strong>Лучший выбор для offline Python pipeline</strong> (<code>process_audio.py</code>).
+Для C++ VST нужен ONNX-экспорт (отсутствует в репо PENN, но делается через <code>torch.onnx.export</code> — оценка 1–2 часа работы).</p>
+<h4 id="pesto-sony-csl-20232025-главный-кандидат-для-phase-2">PESTO (Sony CSL, 2023/2025) ⭐ Главный кандидат для Phase 2<a class="headerlink" href="#pesto-sony-csl-20232025-главный-кандидат-для-phase-2" title="Permanent link">&para;</a></h4>
+<p><a href="https://arxiv.org/abs/2309.02265">arXiv:2309.02265</a> (оригинал) /
+<a href="https://arxiv.org/abs/2508.01488">arXiv:2508.01488</a> (TISMIR 2025)
+<a href="https://github.com/SonyCSLParis/pesto">GitHub pesto</a></p>
+<ul>
+<li><strong>130k параметров</strong>, VQT-based, self-supervised</li>
+<li>Latency: <strong>&lt; 5 мс</strong></li>
+<li><strong>Streaming ONNX export</strong> (~0.7 мс inference per frame)</li>
+<li>В 5x быстрее PENN на CPU</li>
+<li>ONNX → <strong>реалистичная цель для RTNeural в Phase 2</strong></li>
+</ul>
+<h4 id="swiftf0-nieradzik-август-2025-новейший">SwiftF0 (Nieradzik, август 2025) ⭐ Новейший<a class="headerlink" href="#swiftf0-nieradzik-август-2025-новейший" title="Permanent link">&para;</a></h4>
+<p><a href="https://arxiv.org/abs/2508.18440">arXiv:2508.18440</a> /
+<a href="https://github.com/lars76/swift-f0">GitHub swift-f0</a></p>
+<ul>
+<li><strong>95k параметров</strong>, 2D CNN на STFT</li>
+<li><strong>42x быстрее CREPE</strong> на CPU</li>
+<li>RPA при 10 дБ SNR: <strong>91.80%</strong> (CREPE: ~79%) — по MDB-stem-synth, Table 2 статьи</li>
+<li>Диапазон: <strong>46.9–2094 Гц</strong> (покрывает весь бас диапазон!)</li>
+<li>Пока нет ONNX экспорта (август 2025)</li>
+</ul>
+<h3 id="81-разбор-статьи-koguchi-morise-eurasip-2024">8.1 Разбор статьи: Koguchi &amp; Morise, EURASIP 2024<a class="headerlink" href="#81-разбор-статьи-koguchi-morise-eurasip-2024" title="Permanent link">&para;</a></h3>
+<p><strong>Полное название:</strong> "Neural electric bass guitar synthesis framework enabling attack-sustain-representation-based technique control"
+<strong>Авторы:</strong> Koguchi, Morise
+<strong>Журнал:</strong> EURASIP Journal on Audio, Speech, and Music Processing, 2024
+<strong>DOI:</strong> <a href="https://asmp-eurasipjournals.springeropen.com/articles/10.1186/s13636-024-00327-9">10.1186/s13636-024-00327-9</a></p>
+<h4 id="главный-вывод-это-не-подход-a-и-не-подход-b">Главный вывод: это не Подход A и не Подход B<a class="headerlink" href="#главный-вывод-это-не-подход-a-и-не-подход-b" title="Permanent link">&para;</a></h4>
+<p>Система Koguchi &amp; Morise — это MISS (Musical Instrument Sound Synthesis): score → audio, а не audio → audio. Вход — нотная запись (pitch + onset + duration + velocity), выход — waveform баса. Гитарного аудиосигнала на входе нет вообще. Это ни Подход A (pitch detection + синтез из гитарного сигнала), ни Подход B (end-to-end guitar→bass). Прямого переноса архитектуры нет, но аналогия voiced/unvoiced критически важна.</p>
+<h4 id="архитектура-системы">Архитектура системы<a class="headerlink" href="#архитектура-системы" title="Permanent link">&para;</a></h4>
+<p>Система строится поверх Deep Performer — score-to-audio фреймворка на базе Transformer encoder-decoder (Dong &amp; Zhou, ICASSP 2022, <a href="https://arxiv.org/abs/2202.06034">arXiv:2202.06034</a>). Авторы расширяют Deep Performer:</p>
+<ol>
+<li><strong>Alignment model</strong> — Transformer-encoder (3 слоя), принимает токены {pitch, onset, duration, velocity} + позиционное кодирование, предсказывает длительности сегментов.</li>
+<li><strong>Synthesis model</strong> — Transformer-decoder (6 слоёв) поверх alignment output, предсказывает mel-spectrogram баса.</li>
+<li><strong>Vocoder</strong> — предобученный BigVGAN (NVIDIA, ICLR 2023), дообученный на авторской EBG-базе. BigVGAN выбран как устойчивый к инструментальным звукам низкого частотного диапазона, выходящим за дистрибуцию обучающей речи.</li>
+</ol>
+<p>Пайплайн: <code>musical score {pitch, onset, duration, velocity, AS-label}</code> → Alignment model → Synthesis model (mel-spectrogram) → BigVGAN vocoder → waveform баса (16 кГц, hop=256 → 16 мс временное разрешение).</p>
+<p>F0 здесь не детектируется — он подаётся явным входом через pitch-токен. Это принципиально отличается от задачи детекции F0 из аудио.</p>
+<h4 id="attack-sustain-as-представление-ключевая-идея-статьи">Attack-Sustain (AS) представление — ключевая идея статьи<a class="headerlink" href="#attack-sustain-as-представление-ключевая-идея-статьи" title="Permanent link">&para;</a></h4>
+<p>Авторы проводят аналогию с речью:</p>
+<ul>
+<li><strong>Attack</strong> ≈ unvoiced consonant — широкополосный непериодический сегмент: высокочастотный клик медиатора, ингармонические составляющие.</li>
+<li><strong>Sustain</strong> ≈ voiced vowel — периодический сигнал на F₀, характерная спектральная огибающая инструмента.</li>
+</ul>
+<p>AS-метка подаётся как дополнительный символ в токены score: каждая нота получает два токена — для attack-фазы и для sustain-фазы. Это позволяет синтезировать тембр атаки и сустейна раздельно и контролировать технику игры (slap, pluck и т.д.).</p>
+<p>Обучение на авторской базе EBG: 180 фраз, 4-тактовые монофонные бас-партии, ~112 минут, все игровые техники, темпы 60–200 BPM. Supervised, парное обучение: нотная запись + запись реального баса. RT-инференс не заявлен — BigVGAN тяжёлый, offline.</p>
+<h4 id="сравнение-с-подходами-a-и-b-проекта">Сравнение с Подходами A и B проекта<a class="headerlink" href="#сравнение-с-подходами-a-и-b-проекта" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>Критерий</th>
+<th>Подход A</th>
+<th>Подход B</th>
+<th>Koguchi &amp; Morise 2024</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Входной сигнал</td>
+<td>guitar waveform</td>
+<td>guitar waveform</td>
+<td>musical score (MIDI-like)</td>
+</tr>
+<tr>
+<td>Pitch модуль</td>
+<td>PESTO (detector)</td>
+<td>имплицитный</td>
+<td>явный pitch-токен из score</td>
+</tr>
+<tr>
+<td>Attack модель</td>
+<td><code>pitchIsValid</code> gate</td>
+<td>имплицитный</td>
+<td>AS-метка (unvoiced токен)</td>
+</tr>
+<tr>
+<td>Синтез</td>
+<td>ML тембр + DDSP</td>
+<td>end-to-end</td>
+<td>Transformer + BigVGAN</td>
+</tr>
+<tr>
+<td>Парные данные</td>
+<td>guitar/bass пары</td>
+<td>guitar/bass пары</td>
+<td>score/bass пары</td>
+</tr>
+<tr>
+<td>Real-time</td>
+<td>да (&lt;30 мс цель)</td>
+<td>да (&lt;50 мс цель)</td>
+<td>нет (offline)</td>
+</tr>
+<tr>
+<td>Задача</td>
+<td>audio conversion</td>
+<td>audio conversion</td>
+<td>score-to-audio synthesis</td>
+</tr>
+</tbody>
+</table>
+<h4 id="что-применимо-к-нашему-шагу-3-ml-синтез-тембра-conditioned">Что применимо к нашему Шагу 3 (ML-синтез тембра, conditioned)<a class="headerlink" href="#что-применимо-к-нашему-шагу-3-ml-синтез-тембра-conditioned" title="Permanent link">&para;</a></h4>
+<p><strong>Идея 1 — AS-метка как conditioning.</strong> В conditioned ML (Phase 2A) роль AS-метки уже выполняет флаг <code>pitchIsValid</code> в C++: <code>false</code> = unvoiced (атака), <code>true</code> = voiced (сустейн). Архитектурно идентичный механизм на другом уровне стека. В ML-модели его можно материализовать как бинарный conditioning-вектор рядом с F0 и loudness: <code>cond = concat[f0_normalized, loudness, voiced_flag]</code>.</p>
+<p><strong>Идея 2 — BigVGAN vocoder для offline (Phase 3).</strong> Если Phase 3 не ограничена RT, BigVGAN finetuned на bass database — прямой кандидат для offline-синтеза высокого качества.</p>
+<p>Чего нет у Koguchi &amp; Morise для нашей задачи: система не решает guitar-audio → bass-audio, она генерирует бас из score. Pitch detection из аудио, фазовая когерентность субгармоники f₀/2 между буферами, latency budget — вне скоупа статьи.</p>
+<h3 id="сравнение-обновлено">Сравнение (обновлено)<a class="headerlink" href="#сравнение-обновлено" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>Метод       Окно       RT      Транзиенты    Точность   Примечание
+─────────────────────────────────────────────────────────────────────
+YIN         ~23 мс     Да      Умерен.       ~85-90%    Текущий. Бесплатно.
+PYIN        ~50-100    Частич. Слабый        ~92%       HMM сглаживает
+CREPE       64 мс      Нет     Слабый        ~95%       Окно слишком большое
+PENN        5 мс       Нет*    Хороший       ~93%       * нет C++ порта
+PESTO ⭐    &lt; 5 мс     Да      Хороший       ~92%       ONNX, RT-ready
+SwiftF0 ⭐  &lt; 5 мс     Да      Хороший       91.8%      Нет ONNX (пока)
+</code></pre></div>
+
+<p><strong>Рекомендация:</strong>
+- Offline (<code>process_audio.py</code>): PENN прямо сейчас
+- Phase 2 VST: PESTO через ONNX → RTNeural</p>
+<hr />
+<h2 id="9-neural-architectures">9. Neural Architectures<a class="headerlink" href="#9-neural-architectures" title="Permanent link">&para;</a></h2>
+<h3 id="wavenet-style">WaveNet-style<a class="headerlink" href="#wavenet-style" title="Permanent link">&para;</a></h3>
+<p>Autoregressive, O(N). Не для RT. Для обучения через distillation.</p>
+<h3 id="tcn">TCN<a class="headerlink" href="#tcn" title="Permanent link">&para;</a></h3>
+<p>Дилятированные свёртки, большой receptive field, параллельный инференс.
+<strong>RTNeural ограничение:</strong> нет <code>groups</code> в Conv1D → depthwise-separable нельзя.
+Собирать TCN нужно из Conv1D + skip connections вручную.</p>
+<h3 id="gru-lstm_1">GRU / LSTM<a class="headerlink" href="#gru-lstm_1" title="Permanent link">&para;</a></h3>
+<p>Память между буферами → когерентная фаза субгармоники.
+RTNeural поддерживает напрямую. Рекомендуемый старт: 1–2 слоя, 32–64 hidden.</p>
+<h3 id="ddsp">DDSP<a class="headerlink" href="#ddsp" title="Permanent link">&para;</a></h3>
+<p>Дифференцируемый синтезатор как модуль. F0 задаётся извне.
+Физически интерпретируемые параметры. Малый размер сети.</p>
+<h3 id="newt-fastnewt">NEWT (FastNEWT)<a class="headerlink" href="#newt-fastnewt" title="Permanent link">&para;</a></h3>
+<p>MLP с периодическими активациями, waveform domain.
+<strong>260k параметров</strong>, CPU real-time. Conditioned на F0 + loudness.
+<a href="https://github.com/ben-hayes/neural-waveshaping-synthesis">GitHub NEWT</a></p>
+<h3 id="диффузия-offline">Диффузия (offline)<a class="headerlink" href="#диффузия-offline" title="Permanent link">&para;</a></h3>
+<p>WaveTransfer, Sony Latent Diffusion Bridges — SOTA качество, непарные данные.
+Не подходят для RT.</p>
+<hr />
+<h2 id="10-loss-functions">10. Loss Functions<a class="headerlink" href="#10-loss-functions" title="Permanent link">&para;</a></h2>
+<h3 id="зачем-не-просто-l1l2">Зачем не просто L1/L2<a class="headerlink" href="#зачем-не-просто-l1l2" title="Permanent link">&para;</a></h3>
+<p>L1/L2 усредняет по фазе → размытые атаки.</p>
+<h3 id="multi-scale-stft-loss-mrstft-де-факто-стандарт">Multi-Scale STFT Loss (MRSTFT) — де-факто стандарт<a class="headerlink" href="#multi-scale-stft-loss-mrstft-де-факто-стандарт" title="Permanent link">&para;</a></h3>
+<p><strong>auraloss v0.4.0</strong> (Steinmetz &amp; Reiss) — <a href="https://github.com/csteinmetz1/auraloss">GitHub</a>
+<code>pip install auraloss</code>. Доступные losses: STFT, MRSTFT, mel-spectrogram,
+ESR, DC loss, sum-and-difference (добавлен фев 2024), SI-SDR.</p>
+<div class="highlight"><pre><span></span><code>  FFT 512  → временное разрешение (транзиенты)
+  FFT 1024 → баланс
+  FFT 2048 → частотное разрешение
+  FFT 4096 → низкие частоты баса (F₀=41 Гц разрешается от FFT ~1024)
+
+  Loss = Σᵢ [|S_target - S_pred|₁ + |log S_target - log S_pred|₁]
+</code></pre></div>
+
+<h3 id="envelope-loss">Envelope Loss<a class="headerlink" href="#envelope-loss" title="Permanent link">&para;</a></h3>
+<p>L1 на RMS огибающей (10–50 мс). Штрафует за несоответствие формы атаки.</p>
+<h3 id="gan-adversarial">GAN / Adversarial<a class="headerlink" href="#gan-adversarial" title="Permanent link">&para;</a></h3>
+<p>HiFi-GAN Multi-Period Discriminator (MPD) — моделирует периодичность.
+Острые атаки, реалистичный тембр. Нестабильное обучение.</p>
+<h3 id="рецепт-для-проекта">Рецепт для проекта<a class="headerlink" href="#рецепт-для-проекта" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="n">L_total</span> <span class="o">=</span> <span class="n">L1_waveform</span> <span class="err">×</span> <span class="mf">0.1</span> <span class="o">+</span> <span class="n">MRSTFT</span><span class="p">(</span><span class="n">fft_sizes</span><span class="o">=</span><span class="p">[</span><span class="mi">512</span><span class="p">,</span> <span class="mi">1024</span><span class="p">,</span> <span class="mi">2048</span><span class="p">,</span> <span class="mi">4096</span><span class="p">])</span> <span class="err">×</span> <span class="mf">1.0</span>
+<span class="c1"># Phase 2A (conditioned): + envelope_loss × 0.5  (пока не реализован в ml/train.py)</span>
+</code></pre></div>
+
+<p>Фактическая реализация: <code>ml/train.py</code>. <code>envelope_loss</code> в текущем baseline отсутствует.</p>
+<hr />
+<h2 id="11-датасеты">11. Датасеты<a class="headerlink" href="#11-датасеты" title="Permanent link">&para;</a></h2>
+<h3 id="slakh2100-лучший-старт">Slakh2100 ⭐ — лучший старт<a class="headerlink" href="#slakh2100-лучший-старт" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Zenodo:</strong> <a href="https://zenodo.org/records/4599666">zenodo.org/records/4599666</a> — 105 GB, 145 часов</li>
+<li><strong>16 кГц версия:</strong> <a href="https://zenodo.org/records/7717249">zenodo.org/records/7717249</a></li>
+<li><strong>HuggingFace:</strong> <a href="https://huggingface.co/datasets/Higobeatz/slakh2100">higobeatz/slakh2100</a></li>
+<li>Загрузка через <code>mirdata</code> (<code>pip install mirdata</code>)</li>
+<li>2100 треков, один MIDI → guitar + bass стемы → <strong>автоматически синхронные пары</strong></li>
+</ul>
+<p><strong>Caveat:</strong> все стемы — рендер MIDI через sample-based VST (Kontakt-style), не живые записи. Реальная электрогитара имеет шум медиатора, ангармоничность струны, характер звукоснимателя — ничего из этого в Slakh нет. Подходит как pre-train; без fine-tune на реальных записях модель плохо обобщится.</p>
+<h3 id="guitarset">GuitarSet<a class="headerlink" href="#guitarset" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Zenodo:</strong> <a href="https://zenodo.org/records/3371780">zenodo.org/records/3371780</a> — version 1.1.0</li>
+<li>360 гитарных записей, hex pickup (по-струнно), MIDI + pitch annotations</li>
+<li>Только гитарная сторона, но с аннотацией</li>
+</ul>
+<h3 id="musdb18-hq">MUSDB18-HQ<a class="headerlink" href="#musdb18-hq" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Zenodo:</strong> <a href="https://zenodo.org/records/3338373">zenodo.org/records/3338373</a> — требует access request</li>
+<li>150 треков, реальные bass стемы</li>
+</ul>
+<h3 id="nsynth-google-magenta">NSynth (Google Magenta)<a class="headerlink" href="#nsynth-google-magenta" title="Permanent link">&para;</a></h3>
+<ul>
+<li><a href="https://magenta.tensorflow.org/datasets/nsynth">magenta.tensorflow.org/datasets/nsynth</a></li>
+<li>305k isolated notes, 1006 инструментов (guitar + bass)</li>
+<li>Для timbre embedding, не phrase-level</li>
+</ul>
+<h3 id="sony-latent-diffusion-готовые-веса">Sony Latent Diffusion — готовые веса<a class="headerlink" href="#sony-latent-diffusion-готовые-веса" title="Permanent link">&para;</a></h3>
+<ul>
+<li><a href="https://zenodo.org/records/13840360">zenodo.org/records/13840360</a></li>
+<li>Готовая unsupervised timbre transfer модель (ICASSP 2025)</li>
+</ul>
+<h3 id="свои-пары-рекомендуется-для-phase-2a">Свои пары (рекомендуется для Phase 2A)<a class="headerlink" href="#свои-пары-рекомендуется-для-phase-2a" title="Permanent link">&para;</a></h3>
+<ol>
+<li>Click-track в Reaper</li>
+<li>Гитара → wav</li>
+<li>Тот же рифф на bass VST → wav</li>
+<li>Оба трека синхронны по клику</li>
+</ol>
+<p><strong>Критично:</strong> синхронизировать на этапе записи. Постфактум точно выровнять невозможно.</p>
+<hr />
+<h2 id="12-практические-проблемы">12. Практические проблемы<a class="headerlink" href="#12-практические-проблемы" title="Permanent link">&para;</a></h2>
+<h3 id="121-октавная-неоднозначность">12.1 Октавная неоднозначность<a class="headerlink" href="#121-октавная-неоднозначность" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>  E2 (82 Гц):
+    Правильно:     YIN → 82 Гц → бас 41 Гц (E1) ✓
+    Ошибка вниз:  YIN → 41 Гц → бас 20 Гц (E0) ✗ (ниже диапазона!)
+    Ошибка вверх: YIN → 164 Гц → бас 82 Гц (E2) ✗ (октава выше нужного)
+</code></pre></div>
+
+<p>Решение: ограничение диапазона (70–1300 Гц) + <code>pitchIsValid</code>.</p>
+<h3 id="122-фазовая-когерентность-субгармоники">12.2 Фазовая когерентность субгармоники<a class="headerlink" href="#122-фазовая-когерентность-субгармоники" title="Permanent link">&para;</a></h3>
+<p>Stateless TCN — фаза f₀/2 случайна на каждом processBlock → "треск" на стыках.
+Решение: GRU с hidden state или conditioned synth (Phase 1 решает детерминированно).</p>
+<h3 id="123-синхронизация-пар">12.3 Синхронизация пар<a class="headerlink" href="#123-синхронизация-пар" title="Permanent link">&para;</a></h3>
+<p>5 мс сдвига между guitar.wav и bass.wav — модель учится на шуме.
+Записывать синхронно по клику. Нельзя исправить постфактум.</p>
+<h3 id="124-latency-budget">12.4 Latency budget<a class="headerlink" href="#124-latency-budget" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>  Компонент                   Phase 1          Phase 2A target
+  ──────────────────────────────────────────────────────────────
+  Pitch detection window      ~23 мс (YIN)     &lt;5 мс (PESTO)
+  ML inference                —                5–15 мс
+  processBlock buffer         5–10 мс          5–10 мс
+  Алгоритмический lookahead   0 мс             0–30 мс (только запись,
+                                               DAW компенсирует)
+  ──────────────────────────────────────────────────────────────
+  RT мониторинг (sum)         28–33 мс         10–30 мс ✓
+  Запись (после DAW comp.)    ~0 мс            ~0 мс ✓
+</code></pre></div>
+
+<blockquote>
+<p><strong>Важно:</strong> <code>PluginProcessor.cpp</code> сейчас <strong>не вызывает <code>setLatencySamples()</code></strong> — DAW-компенсация в записи не работает. Подробнее — §12.6.</p>
+</blockquote>
+<h3 id="126-daw-latency-compensation">12.6 DAW latency compensation<a class="headerlink" href="#126-daw-latency-compensation" title="Permanent link">&para;</a></h3>
+<p>JUCE-плагин должен вызывать <code>setLatencySamples(N)</code> чтобы DAW сдвинула дорожку при записи и компенсировала алгоритмическую задержку. В текущем коде этот вызов <strong>отсутствует</strong> — записанный бас будет смещён вправо на ~23 мс (YIN-окно) + размер processBlock. На ритм-партиях это слышно.</p>
+<p>Что делать: в <code>prepareToPlay</code> вызвать <code>setLatencySamples(yinWindowSamples + modelLookahead)</code>. DAW автоматически сдвинет дорожку при записи.</p>
+<h3 id="125-inference-engines-для-juce-плагина">12.5 Inference engines для JUCE-плагина<a class="headerlink" href="#125-inference-engines-для-juce-плагина" title="Permanent link">&para;</a></h3>
+<h4 id="rtneural-текущий">RTNeural (текущий)<a class="headerlink" href="#rtneural-текущий" title="Permanent link">&para;</a></h4>
+<p><a href="https://github.com/jatinchowdhary18/RTNeural">GitHub</a> — активно поддерживается (175+ коммитов, CI/CD).</p>
+<ul>
+<li>Загружает веса из JSON напрямую → минималистичная интеграция</li>
+<li>GRU/LSTM из коробки — предпочтительная архитектура для старта</li>
+<li>Нет <code>groups</code> в Conv1D → depthwise-separable свёртки нельзя, TCN собирать вручную</li>
+<li>Не поддерживает ONNX → PESTO и другие экспортированные модели не загрузить</li>
+</ul>
+<h4 id="anira-2024-рекомендуется-для-phase-2">ANIRA (2024) ⭐ Рекомендуется для Phase 2<a class="headerlink" href="#anira-2024-рекомендуется-для-phase-2" title="Permanent link">&para;</a></h4>
+<p><a href="https://github.com/anira-project/anira">GitHub</a> — IEEE paper 2024, JUCE-first дизайн.</p>
+<ul>
+<li><strong>Мультибэкенд:</strong> один API → LibTorch / ONNX Runtime / TensorFlow Lite на выбор</li>
+<li><strong>Real-time safe:</strong> гарантирует отсутствие аллокаций в audio callback</li>
+<li>Готовый JUCE plugin template — минимальный boilerplate</li>
+<li>ONNX-бэкенд → PESTO загружается напрямую без переписывания</li>
+<li>LibTorch-бэкенд → GRU/TCN модели без конвертации весов</li>
+</ul>
+<h4 id="когда-что-использовать">Когда что использовать<a class="headerlink" href="#когда-что-использовать" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>Задача</th>
+<th>Движок</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GRU baseline (Phase 2B текущий)</td>
+<td>RTNeural — проще, меньше зависимостей</td>
+</tr>
+<tr>
+<td>PESTO pitch detection в VST</td>
+<td>ANIRA + ONNX Runtime</td>
+</tr>
+<tr>
+<td>DDSP / conditioned ML (Phase 2A)</td>
+<td>ANIRA + LibTorch</td>
+</tr>
+<tr>
+<td>Любая новая архитектура Phase 2+</td>
+<td>ANIRA — гибче</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="13-ключевые-статьи">13. Ключевые статьи<a class="headerlink" href="#13-ключевые-статьи" title="Permanent link">&para;</a></h2>
+<h3 id="pitch-detection">Pitch Detection<a class="headerlink" href="#pitch-detection" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Статья</th>
+<th>Год</th>
+<th>Ссылка</th>
+<th>Что читать</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>YIN — de Cheveigné &amp; Kawahara</td>
+<td>2002</td>
+<td><a href="https://doi.org/10.1121/1.1458024">JASA</a></td>
+<td>Разделы II–IV. Классика.</td>
+</tr>
+<tr>
+<td>CREPE — Kim et al.</td>
+<td>2018</td>
+<td><a href="https://arxiv.org/abs/1802.06182">arXiv:1802.06182</a></td>
+<td>Table 1. Benchmark.</td>
+</tr>
+<tr>
+<td>PENN — Morrison et al.</td>
+<td>2023</td>
+<td><a href="https://arxiv.org/abs/2301.12258">arXiv:2301.12258</a></td>
+<td>Sections 2–3.</td>
+</tr>
+<tr>
+<td>PESTO — Riou et al.</td>
+<td>2023/2025</td>
+<td><a href="https://arxiv.org/abs/2309.02265">arXiv:2309.02265</a> / <a href="https://arxiv.org/abs/2508.01488">TISMIR arXiv:2508.01488</a></td>
+<td><strong>Обязательно</strong> для Phase 2.</td>
+</tr>
+<tr>
+<td>SwiftF0 — Nieradzik</td>
+<td>2025</td>
+<td><a href="https://arxiv.org/abs/2508.18440">arXiv:2508.18440</a></td>
+<td>Новейший. Table 2.</td>
+</tr>
+<tr>
+<td>Bass synthesis EURASIP</td>
+<td>2024</td>
+<td><a href="https://asmp-eurasipjournals.springeropen.com/articles/10.1186/s13636-024-00327-9">Springer</a></td>
+<td>AS-представление voiced/unvoiced — аналог <code>pitchIsValid</code>; задача score-to-audio, не audio conversion. Разбор — §8.1.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="neural-audio-synthesis">Neural Audio Synthesis<a class="headerlink" href="#neural-audio-synthesis" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Статья</th>
+<th>Год</th>
+<th>Ссылка</th>
+<th>Что читать</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DDSP — Engel et al.</td>
+<td>2020</td>
+<td><a href="https://arxiv.org/abs/2001.04643">arXiv:2001.04643</a></td>
+<td>Sections 2–4. <strong>Обязательно.</strong></td>
+</tr>
+<tr>
+<td>DDSP Review — Hayes et al.</td>
+<td>2023</td>
+<td><a href="https://arxiv.org/pdf/2308.15422">arXiv:2308.15422</a></td>
+<td>Весь обзор. Лучший обзор DDSP.</td>
+</tr>
+<tr>
+<td>NEWT — Hayes et al.</td>
+<td>2021</td>
+<td><a href="https://arxiv.org/abs/2107.05050">arXiv:2107.05050</a></td>
+<td>Figure 1 + Section 3.</td>
+</tr>
+<tr>
+<td>RAVE — Caillon &amp; Esling</td>
+<td>2021</td>
+<td><a href="https://arxiv.org/abs/2111.05011">arXiv:2111.05011</a></td>
+<td>Sections 1–3.</td>
+</tr>
+<tr>
+<td>Guitar Amp (Wright et al.)</td>
+<td>2020</td>
+<td><a href="https://www.mdpi.com/2076-3417/10/3/766">Applied Sci.</a></td>
+<td>TCN для audio — прямой аналог.</td>
+</tr>
+<tr>
+<td>DDSP Guitar Synth</td>
+<td>2023</td>
+<td><a href="https://arxiv.org/abs/2309.07658">arXiv:2309.07658</a></td>
+<td>F0-conditioned синтез гитары.</td>
+</tr>
+<tr>
+<td>WaveTransfer</td>
+<td>2024</td>
+<td><a href="https://arxiv.org/abs/2409.15321">arXiv:2409.15321</a></td>
+<td>44.1 кГц диффузия, непарные данные.</td>
+</tr>
+<tr>
+<td>Sony Latent Diffusion Bridges</td>
+<td>2025</td>
+<td><a href="https://arxiv.org/abs/2409.06096">arXiv:2409.06096</a></td>
+<td>Unsupervised timbre transfer SOTA.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="loss-functions-training">Loss Functions &amp; Training<a class="headerlink" href="#loss-functions-training" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Статья</th>
+<th>Год</th>
+<th>Ссылка</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>auraloss — Steinmetz &amp; Reiss</td>
+<td>2022</td>
+<td><a href="https://arxiv.org/abs/2202.07655">arXiv:2202.07655</a></td>
+</tr>
+<tr>
+<td>HiFi-GAN — Kong et al.</td>
+<td>2020</td>
+<td><a href="https://arxiv.org/abs/2010.05646">arXiv:2010.05646</a></td>
+</tr>
+</tbody>
+</table>
+<h3 id="инструменты-репозитории">Инструменты / Репозитории<a class="headerlink" href="#инструменты-репозитории" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Репо</th>
+<th>Зачем</th>
+<th>Ссылка</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>RTNeural</td>
+<td>C++ inference в JUCE</td>
+<td><a href="https://github.com/jatinchowdhury18/RTNeural">GitHub</a></td>
+</tr>
+<tr>
+<td>auraloss</td>
+<td>MRSTFT loss, pip install</td>
+<td><a href="https://github.com/csteinmetz1/auraloss">GitHub</a></td>
+</tr>
+<tr>
+<td>PESTO</td>
+<td>RT pitch detection + ONNX</td>
+<td><a href="https://github.com/SonyCSLParis/pesto">GitHub</a></td>
+</tr>
+<tr>
+<td>SwiftF0</td>
+<td>Новейший pitch detector</td>
+<td><a href="https://github.com/lars76/swift-f0">GitHub</a></td>
+</tr>
+<tr>
+<td>PENN</td>
+<td>Offline pitch detection</td>
+<td><a href="https://github.com/interactiveaudiolab/penn">GitHub</a></td>
+</tr>
+<tr>
+<td>NEWT</td>
+<td>RT timbre transfer, 260k params</td>
+<td><a href="https://github.com/ben-hayes/neural-waveshaping-synthesis">GitHub</a></td>
+</tr>
+<tr>
+<td>WaveTransfer</td>
+<td>Diffusion timbre transfer</td>
+<td><a href="https://github.com/WaveTransfer/WaveTransfer">GitHub</a></td>
+</tr>
+<tr>
+<td>RAVE</td>
+<td>VAE RT audio</td>
+<td><a href="https://github.com/acids-ircam/RAVE">GitHub</a></td>
+</tr>
+<tr>
+<td>Scyclone</td>
+<td>RAVE timbre transfer VST, ONNX, transient controller</td>
+<td><a href="https://github.com/Torsion-Audio/Scyclone">GitHub</a></td>
+</tr>
+<tr>
+<td>Scyclone-AI</td>
+<td>Код обучения RAVE модели для Scyclone</td>
+<td><a href="https://github.com/Torsion-Audio/Scyclone-AI">GitHub</a></td>
+</tr>
+<tr>
+<td>ANIRA</td>
+<td>RT-safe inference (LibTorch/ONNX/TFLite) + JUCE template</td>
+<td><a href="https://github.com/anira-project/anira">GitHub</a></td>
+</tr>
+<tr>
+<td>micro-tcn</td>
+<td>Лёгкий TCN, PyTorch</td>
+<td><a href="https://github.com/csteinmetz1/micro-tcn">GitHub</a></td>
+</tr>
+<tr>
+<td>DDSP PyTorch</td>
+<td>DDSP на PyTorch</td>
+<td><a href="https://github.com/acids-ircam/DDSP_pytorch">GitHub</a></td>
+</tr>
+</tbody>
+</table>
+<h3 id="датасеты-прямые-ссылки">Датасеты (прямые ссылки)<a class="headerlink" href="#датасеты-прямые-ссылки" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Датасет</th>
+<th>Ссылка</th>
+<th>Размер</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Slakh2100 (44.1k)</td>
+<td><a href="https://zenodo.org/records/4599666">zenodo.org/records/4599666</a></td>
+<td>105 GB</td>
+</tr>
+<tr>
+<td>Slakh2100 (16k)</td>
+<td><a href="https://zenodo.org/records/7717249">zenodo.org/records/7717249</a></td>
+<td>—</td>
+</tr>
+<tr>
+<td>GuitarSet</td>
+<td><a href="https://zenodo.org/records/3371780">zenodo.org/records/3371780</a></td>
+<td>—</td>
+</tr>
+<tr>
+<td>MUSDB18-HQ</td>
+<td><a href="https://zenodo.org/records/3338373">zenodo.org/records/3338373</a></td>
+<td>—</td>
+</tr>
+<tr>
+<td>Sony diffusion weights</td>
+<td><a href="https://zenodo.org/records/13840360">zenodo.org/records/13840360</a></td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="14-open-questions">14. Open Questions<a class="headerlink" href="#14-open-questions" title="Permanent link">&para;</a></h2>
+<p>Вопросы, которые нужно проверить эмпирически — помогают приоритизировать эксперименты.</p>
+<ol>
+<li><strong>YIN на 44.1 кГц для E2.</strong> 1024 сэмпла = ~1.9 периода. Достаточно ли для надёжной детекции? Эксперимент: измерить RPA на синтетической E2 + белый шум разного уровня.</li>
+<li><strong>Aliasing sawtooth на F₀/2 &gt; 500 Гц.</strong> Слышно ли в миксе? Насколько критично до перехода на PolyBLEP?</li>
+<li><strong>Slakh-pretrain → real fine-tune transfer.</strong> Сколько минут реальных записей нужно для убедительного качества?</li>
+<li><strong>PESTO ONNX в JUCE/RTNeural.</strong> Какая фактическая латентность на CPU при размере буфера 256 и 512?</li>
+<li><strong>Onset detector vs pitchIsValid race.</strong> Когда onset срабатывает на новой ноте, а YIN ещё не успел — бас играет старый питч ~23 мс. Как маскировать? Быстрый fade-out при onset?</li>
+<li><strong>setLatencySamples() приоритет.</strong> Как скоро это критично для записи в Reaper?</li>
+<li><strong>BigVGAN finetuning на нашей базе.</strong> Koguchi &amp; Morise показывают достаточность ~112 мин EBG-базы для finetuning предобученного BigVGAN. На текущем объёме <code>data/v0/</code> (~10–15 мин) finetuning потребует дополнительных данных. Применимо только к Phase 3 (offline).</li>
+</ol>
+<hr />
+<p><em>Документ составлен на основе WebSearch (май 2026) — ссылки верифицированы живым поиском.</em>
+<em>Предыдущая версия была основана только на training knowledge до августа 2025.</em></p>
+<hr />
+<h2 id="курс-для-освежения">Курс для освежения<a class="headerlink" href="#курс-для-освежения" title="Permanent link">&para;</a></h2>
+<p><strong>Deep Learning for Audio and DSP (dl4ad)</strong> — Fares Schulz
+<a href="https://github.com/faressc/dl4ad">github.com/faressc/dl4ad</a></p>
+<p>11 лекций: CNN/RNN, трансформеры, VAE, латентные пространства, «Tricks of the Trade». Intermediate уровень, есть Jupyter notebooks. Покрывает основы нейросетей применительно к аудио — хорошо для освежения аудиоопераций и матчасти.</p>
+</main>
+
+</div>
+</body>
+</html>

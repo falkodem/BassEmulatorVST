@@ -114,7 +114,9 @@ def process_file(
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--run",   required=True, help="Run directory (contains best.pt + config.json)")
-    parser.add_argument("--input", required=True, help="WAV file or folder of WAV files")
+    parser.add_argument("--input",
+     default='./data/v0/guitar/',
+     help="WAV file or folder of WAV files")
     args = parser.parse_args()
 
     device     = torch.device("cuda" if torch.cuda.is_available() else "cpu")
