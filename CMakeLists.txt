@@ -93,13 +93,40 @@ target_link_libraries(BassEmulatorVST
         juce::juce_recommended_warning_flags
 )
 
-# ── Копирование ORT shared libs рядом с .vst3 (Windows) ───────────────────────
-# ANIRA выставляет ANIRA_SHARED_LIBS_WIN — список DLL бэкенда. Если их не
-# положить в Contents/x86_64-win/ рядом с BassEmulatorVST.vst3 — хост (Reaper)
-# не сможет загрузить плагин из-за неразрешённых импортов onnxruntime.dll.
+# ── Windows delay-load для бандлированных DLL ────────────────────────────────
+# anira.dll и onnxruntime.dll лежат в x86_64-win/ внутри .vst3-бандла.
+# Без delay-load Windows пытается разрезолвить их как статические зависимости
+# по директории хоста (Reaper) — и не находит. Delay-load откладывает резолв
+# до первого вызова, а к тому моменту BundledDllDirectoryRegistrar (в
+# PluginProcessor.cpp) уже зарегистрировал x86_64-win/ через AddDllDirectory.
+if (MSVC)
+    target_link_options(BassEmulatorVST_VST3 PRIVATE
+        /DELAYLOAD:anira.dll
+        /DELAYLOAD:onnxruntime.dll
+    )
+    target_link_libraries(BassEmulatorVST_VST3 PRIVATE delayimp)
+endif()
+
+# ── Копирование ORT shared libs (Windows) ────────────────────────────────────
+# ANIRA выставляет ANIRA_SHARED_LIBS_WIN — список DLL бэкенда.
+#
+# PRE_BUILD: кладём DLL рядом с juce_vst3_helper.exe (build/Release/).
+#   juce_vst3_helper загружает .vst3 чтобы сгенерировать moduleinfo.json;
+#   Windows ищет зависимости плагина сначала в директории хелпера, поэтому
+#   без этого шага хелпер падает с exit code 1 и оставляет пустой json.
+#
+# POST_BUILD: кладём DLL в Contents/x86_64-win/ рядом с .vst3 — это нужно
+#   Reaper (и любому VST3-хосту) при загрузке плагина в рантайме.
 if (MSVC)
     if (DEFINED ANIRA_SHARED_LIBS_WIN)
+        add_custom_command(TARGET BassEmulatorVST_VST3 PRE_BUILD
+            COMMENT "Copying ORT DLLs next to juce_vst3_helper (needed for moduleinfo.json)"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${ANIRA_SHARED_LIBS_WIN}
+                ${CMAKE_BINARY_DIR}/Release
+        )
         add_custom_command(TARGET BassEmulatorVST_VST3 POST_BUILD
+            COMMENT "Copying ORT DLLs into VST3 bundle"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 ${ANIRA_SHARED_LIBS_WIN}
                 $<TARGET_FILE_DIR:BassEmulatorVST_VST3>
