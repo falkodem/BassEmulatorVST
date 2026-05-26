@@ -65,11 +65,28 @@ target_compile_definitions(BassEmulatorVST PUBLIC
     JUCE_VST3_CAN_REPLACE_VST2=0
 )
 
+# ── PESTO ONNX-модель как binary resource ─────────────────────────────────────
+# Модель встраивается в .vst3 на этапе сборки (плагин остаётся self-contained).
+# Файл лежит в models/ (gitignored) — если его нет, выдаём осмысленную ошибку.
+set(PESTO_ONNX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/models/pesto.onnx")
+if (NOT EXISTS "${PESTO_ONNX_PATH}")
+    message(FATAL_ERROR
+        "models/pesto.onnx не найден. Сначала выпусти модель:\n"
+        "  source venv/bin/activate\n"
+        "  poetry run python ml/utils/export_pesto_onnx.py")
+endif()
+juce_add_binary_data(PestoModelData
+    HEADER_NAME "PestoModelData.h"
+    NAMESPACE   PestoModelData
+    SOURCES     ${PESTO_ONNX_PATH}
+)
+
 target_link_libraries(BassEmulatorVST
     PRIVATE
         juce::juce_audio_utils
         juce::juce_dsp
         anira::anira
+        PestoModelData
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
