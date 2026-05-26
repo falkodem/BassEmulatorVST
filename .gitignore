@@ -3,7 +3,6 @@ build/
 *.user
 data/
 runs/
-models/
 processed/
 venv/
 __pycache__/
