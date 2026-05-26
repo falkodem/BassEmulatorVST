@@ -1,6 +1,6 @@
 #pragma once
 #include <JuceHeader.h>
-#include "YinPitchDetector.h"
+#include "PestoPitchDetector.h"
 #include "OnsetDetector.h"
 #include "EnvelopeFollower.h"
 
@@ -38,9 +38,9 @@ private:
     juce::dsp::Oscillator<float>   osc;
     juce::dsp::LadderFilter<float> filter;
 
-    YinPitchDetector yin;
-    OnsetDetector    onset;
-    EnvelopeFollower envFollower;
+    PestoPitchDetector pesto;
+    OnsetDetector      onset;
+    EnvelopeFollower   envFollower;
 
     juce::AudioBuffer<float> bassBuffer;
     float currentPitch = 110.0f;

@@ -40,7 +40,8 @@ void BassEmulatorProcessor::prepareToPlay(double sampleRate, int samplesPerBlock
 
     onset.prepare(sampleRate);
     envFollower.prepare(sampleRate);
-    yin.reset();
+    pesto.prepare(sampleRate, samplesPerBlock);
+    setLatencySamples(pesto.getLatencySamples());
 
     bassBuffer.setSize(1, samplesPerBlock);
     pitchIsValid = false;
@@ -60,7 +61,7 @@ void BassEmulatorProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
     if (onset.process(inputData, numSamples))
         envFollower.triggerAttack();
 
-    float detectedPitch = yin.process(inputData, numSamples, getSampleRate());
+    float detectedPitch = pesto.process(inputData, numSamples);
     if (detectedPitch > 0.0f)
     {
         currentPitch = detectedPitch / 2.0f;
