@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdio>
 #include <vector>
 #include <anira/anira.h>
 #include <PestoModelData.h>
@@ -54,7 +55,11 @@ public:
               kWarmUp),
           m_processor(m_config),
           m_handler(m_processor, m_config)
-    {}
+    {
+        // SessionElement::m_current_backend defaults to CUSTOM — must set ONNX explicitly
+        // so the inference thread uses OnnxRuntimeProcessor, not the pass-through stub.
+        m_handler.set_inference_backend(anira::InferenceBackend::ONNX);
+    }
 
     void prepare(double sampleRate, int blockSize)
     {
@@ -69,22 +74,68 @@ public:
         m_handler.reset();
         m_hasValid.store(false, std::memory_order_release);
         m_lastPitch.store(0.0f, std::memory_order_relaxed);
+        m_debugCount = 0;
     }
 
     /** Толкаем блок аудио в инференс-пайплайн и возвращаем последний валидный F0 (Гц).
-     *  Возврат 0.0f означает «питч ещё не определён» — синтез должен пропустить блок. */
+     *  Возврат 0.0f означает «питч ещё не определён» — синтез должен пропустить блок.
+     *
+     *  Паттерн push_data() + pop_data(nullptr, 0):
+     *
+     *  1. push_data() → new_data_submitted() — отправляет аудио на фоновый инференс.
+     *
+     *  2. pop_data(nullptr, 0) → new_data_request() → post_process() → set_output()
+     *     Именно через pop_data/process вызывается new_data_request(), который
+     *     (когда инференс завершится) запускает post_process() → заполняет atomic storage.
+     *     num_output_samples=0 критически важен: оба выхода non-streamable
+     *     (postprocess_output_size={0,0}), хранилище — MemoryBlock<atomic<float>>[26].
+     *     Без нуля process_output() пытается прочитать get_output(i, 0..blockSize-1),
+     *     а blockSize (512) > 26 → OOB → memory corruption → automute/crash.
+     *
+     *  3. get_output() читает F0/confidence из atomic storage, заполненного п.2.
+     */
     float process(const float* monoInput, int numSamples)
     {
-        const float* const ptrs[1] = { monoInput };
-        m_handler.push_data(ptrs, static_cast<size_t>(numSamples));
+        // 1. Пушим аудио
+        const float* const inputCh[1] = { monoInput };
+        m_handler.push_data(inputCh, static_cast<size_t>(numSamples), 0);
 
-        // Берём кадр в самой свежей позиции окна. У него меньше «будущего контекста»
-        // (zero-pad), но он соответствует «сейчас». Можно сдвинуться на -7 кадров
-        // для лучшего контекста ценой +70 мс задержки — оставлено на будущее (см. Block 5).
+        // 2. pop с нулём сэмплов: запускает new_data_request() → post_process(),
+        //    но не вызывает get_output() внутри process_output() (цикл sample<0 не идёт).
+        m_handler.pop_data(static_cast<float* const*>(nullptr), 0, 0);
+
+        // 3. Читаем последний кадр из atomic storage (заполнен, когда инференс готов).
+        // Берём кадр в самой свежей позиции окна. Можно сдвинуться на -7 кадров
+        // для лучшего контекста ценой +70 мс задержки — оставлено на будущее.
         const float conf = m_processor.get_output(1, kFramesPerWindow - 1);
+        const float f0   = m_processor.get_output(0, kFramesPerWindow - 1);
+
+        // ── DEBUG: log first 500 blocks to %TEMP%\pesto_debug.log ────────────
+        ++m_debugCount;
+        if (m_debugCount <= 500 && m_debugCount % 50 == 0)
+        {
+            // Also collect the max conf across all kFramesPerWindow frames.
+            float maxConf = 0.0f;
+            float maxF0   = 0.0f;
+            for (int fi = 0; fi < kFramesPerWindow; ++fi)
+            {
+                float c = m_processor.get_output(1, fi);
+                float p = m_processor.get_output(0, fi);
+                if (c > maxConf) { maxConf = c; maxF0 = p; }
+            }
+            if (FILE* fp = std::fopen("D:\\projects\\BassEmulatorVST\\pesto_debug.log", "a"))
+            {
+                std::fprintf(fp,
+                    "[%d] last_frame: conf=%.4f f0=%.2f | best_frame: conf=%.4f f0=%.2f | hasValid=%d\n",
+                    m_debugCount, conf, f0, maxConf, maxF0,
+                    (int)m_hasValid.load(std::memory_order_relaxed));
+                std::fclose(fp);
+            }
+        }
+        // ─────────────────────────────────────────────────────────────────────
+
         if (conf >= kVoicedThreshold)
         {
-            const float f0 = m_processor.get_output(0, kFramesPerWindow - 1);
             if (f0 > 0.0f)
             {
                 m_lastPitch.store(f0, std::memory_order_relaxed);
@@ -132,6 +183,7 @@ private:
     PestoProcessor          m_processor;
     anira::InferenceHandler m_handler;
 
-    std::atomic<float> m_lastPitch { 0.0f };
-    std::atomic<bool>  m_hasValid  { false };
+    std::atomic<float> m_lastPitch  { 0.0f };
+    std::atomic<bool>  m_hasValid   { false };
+    int                m_debugCount { 0 };
 };
