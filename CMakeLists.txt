@@ -16,27 +16,6 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(JUCE)
 
-# ── ANIRA + ONNX Runtime ──────────────────────────────────────────────────────
-# Inference engine для PESTO (Phase 2A, Шаг 2). ANIRA сама подтягивает
-# бинарники ONNX Runtime под целевую платформу. Бэкенды LibTorch / TFLite
-# отключены — нужен только ORT. Тесты/бенчмарки/примеры/доки ANIRA по умолчанию
-# включены — выключаем, чтобы не собирать лишнее.
-set(ANIRA_WITH_ONNXRUNTIME ON  CACHE BOOL "" FORCE)
-set(ANIRA_WITH_LIBTORCH    OFF CACHE BOOL "" FORCE)
-set(ANIRA_WITH_TFLITE      OFF CACHE BOOL "" FORCE)
-set(ANIRA_WITH_TESTS       OFF CACHE BOOL "" FORCE)
-set(ANIRA_WITH_BENCHMARK   OFF CACHE BOOL "" FORCE)
-set(ANIRA_WITH_EXAMPLES    OFF CACHE BOOL "" FORCE)
-set(ANIRA_WITH_DOCS        OFF CACHE BOOL "" FORCE)
-
-FetchContent_Declare(
-    anira
-    GIT_REPOSITORY https://github.com/anira-project/anira.git
-    GIT_TAG        main
-    GIT_SHALLOW    TRUE
-)
-FetchContent_MakeAvailable(anira)
-
 # ── Плагин ────────────────────────────────────────────────────────────────────
 juce_add_plugin(BassEmulatorVST
     PLUGIN_MANUFACTURER_CODE Dmbt
@@ -65,74 +44,12 @@ target_compile_definitions(BassEmulatorVST PUBLIC
     JUCE_VST3_CAN_REPLACE_VST2=0
 )
 
-# ── PESTO ONNX-модель как binary resource ─────────────────────────────────────
-# Модель встраивается в .vst3 на этапе сборки (плагин остаётся self-contained).
-# Файл лежит в models/ (gitignored) — если его нет, выдаём осмысленную ошибку.
-set(PESTO_ONNX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/models/pesto.onnx")
-if (NOT EXISTS "${PESTO_ONNX_PATH}")
-    message(FATAL_ERROR
-        "models/pesto.onnx не найден. Сначала выпусти модель:\n"
-        "  source venv/bin/activate\n"
-        "  poetry run python ml/utils/export_pesto_onnx.py")
-endif()
-juce_add_binary_data(PestoModelData
-    HEADER_NAME "PestoModelData.h"
-    NAMESPACE   PestoModelData
-    SOURCES     ${PESTO_ONNX_PATH}
-)
-
 target_link_libraries(BassEmulatorVST
     PRIVATE
         juce::juce_audio_utils
         juce::juce_dsp
-        anira::anira
-        PestoModelData
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags
 )
-
-# ── Windows delay-load для бандлированных DLL ────────────────────────────────
-# anira.dll и onnxruntime.dll лежат в x86_64-win/ внутри .vst3-бандла.
-# Без delay-load Windows пытается разрезолвить их как статические зависимости
-# по директории хоста (Reaper) — и не находит. Delay-load откладывает резолв
-# до первого вызова, а к тому моменту BundledDllDirectoryRegistrar (в
-# PluginProcessor.cpp) уже зарегистрировал x86_64-win/ через AddDllDirectory.
-if (MSVC)
-    target_link_options(BassEmulatorVST_VST3 PRIVATE
-        /DELAYLOAD:anira.dll
-        /DELAYLOAD:onnxruntime.dll
-    )
-    target_link_libraries(BassEmulatorVST_VST3 PRIVATE delayimp)
-endif()
-
-# ── Копирование ORT shared libs (Windows) ────────────────────────────────────
-# ANIRA выставляет ANIRA_SHARED_LIBS_WIN — список DLL бэкенда.
-#
-# PRE_BUILD: кладём DLL рядом с juce_vst3_helper.exe (build/Release/).
-#   juce_vst3_helper загружает .vst3 чтобы сгенерировать moduleinfo.json;
-#   Windows ищет зависимости плагина сначала в директории хелпера, поэтому
-#   без этого шага хелпер падает с exit code 1 и оставляет пустой json.
-#
-# POST_BUILD: кладём DLL в Contents/x86_64-win/ рядом с .vst3 — это нужно
-#   Reaper (и любому VST3-хосту) при загрузке плагина в рантайме.
-if (MSVC)
-    if (DEFINED ANIRA_SHARED_LIBS_WIN)
-        add_custom_command(TARGET BassEmulatorVST_VST3 PRE_BUILD
-            COMMENT "Copying ORT DLLs next to juce_vst3_helper (needed for moduleinfo.json)"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                ${ANIRA_SHARED_LIBS_WIN}
-                ${CMAKE_BINARY_DIR}/Release
-        )
-        add_custom_command(TARGET BassEmulatorVST_VST3 POST_BUILD
-            COMMENT "Copying ORT DLLs into VST3 bundle"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                ${ANIRA_SHARED_LIBS_WIN}
-                $<TARGET_FILE_DIR:BassEmulatorVST_VST3>
-        )
-    else()
-        message(WARNING "ANIRA_SHARED_LIBS_WIN не определён — ORT DLL не "
-                        "будет скопирован к VST3. Плагин может не загрузиться.")
-    endif()
-endif()

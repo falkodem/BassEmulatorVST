@@ -1,6 +1,6 @@
 #pragma once
 #include <JuceHeader.h>
-#include "PestoPitchDetector.h"
+#include "YinPitchDetector.h"
 #include "OnsetDetector.h"
 #include "EnvelopeFollower.h"
 
@@ -38,7 +38,7 @@ private:
     juce::dsp::Oscillator<float>   osc;
     juce::dsp::LadderFilter<float> filter;
 
-    PestoPitchDetector pesto;
+    YinPitchDetector   yin;
     OnsetDetector      onset;
     EnvelopeFollower   envFollower;
 

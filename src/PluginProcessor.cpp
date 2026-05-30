@@ -1,68 +1,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
-// ── Windows: подгрузка бандлированных DLL ────────────────────────────────────
-// anira.dll и onnxruntime.dll лежат в Contents/x86_64-win/ рядом с плагином.
-// Windows ищет зависимости DLL по APPLICATION-директории хоста (Reaper), а не
-// по директории загружаемого .vst3 — плагин не грузится.
-//
-// Решение: /DELAYLOAD (CMakeLists.txt) + delay-load hook ниже.
-//
-// Почему не static initializer + AddDllDirectory:
-//   C++ static init'ы выполняются внутри DllMain (DLL_PROCESS_ATTACH).
-//   AddDllDirectory и LoadLibraryW внутри DllMain небезопасны — они
-//   конфликтуют с loader lock и возвращают ERROR_DLL_INIT_FAILED (1114).
-//
-// Как работает hook:
-//   __pfnDliNotifyHook2 перехватывает dliNotePreLoadLibrary и загружает DLL
-//   полным путём из x86_64-win/. Hook вызывается при ПЕРВОМ вызове кода ANIRA
-//   (из createPluginFilter → PestoPitchDetector конструктор) — это уже ВНЕ
-//   DllMain, loader lock освобождён, LoadLibraryW безопасен.
-#ifdef _WIN32
-#include <windows.h>
-#include <delayimp.h>
-#include <string>
-
-static FARPROC WINAPI bundledDllLoadHook (unsigned dliNotify, PDelayLoadInfo pdli)
-{
-    if (dliNotify != dliNotePreLoadLibrary)
-        return nullptr;
-
-    // Директория этого .vst3-модуля (x86_64-win/)
-    HMODULE hSelf = nullptr;
-    if (!GetModuleHandleExW (
-            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            reinterpret_cast<LPCWSTR> (&bundledDllLoadHook),
-            &hSelf))
-        return nullptr;
-
-    wchar_t dir[MAX_PATH] = {};
-    GetModuleFileNameW (hSelf, dir, MAX_PATH);
-
-    wchar_t* slash = wcsrchr (dir, L'\\');
-    if (!slash) return nullptr;
-    *(slash + 1) = L'\0'; // dir = "...\x86_64-win\"
-
-    // pdli->szDll = "anira.dll" или "onnxruntime.dll"
-    wchar_t wname[256] = {};
-    if (!MultiByteToWideChar (CP_ACP, 0, pdli->szDll, -1, wname, 256))
-        return nullptr;
-
-    std::wstring fullPath (dir);
-    fullPath += wname;
-
-    HMODULE h = LoadLibraryW (fullPath.c_str());
-    return reinterpret_cast<FARPROC> (h); // nullptr = fallback на стандартный поиск
-}
-
-// Переопределяем слабый символ из delayimp.lib (только для этого модуля).
-// У каждого DLL, использующего delay-load, своя копия этого символа —
-// мы переопределяем только нашу, не затрагивая Reaper и другие плагины.
-extern "C" const PfnDliHook __pfnDliNotifyHook2 = bundledDllLoadHook;
-
-#endif // _WIN32
-// ─────────────────────────────────────────────────────────────────────────────
 
 BassEmulatorProcessor::BassEmulatorProcessor()
     : AudioProcessor(BusesProperties()
@@ -103,8 +41,7 @@ void BassEmulatorProcessor::prepareToPlay(double sampleRate, int samplesPerBlock
 
     onset.prepare(sampleRate);
     envFollower.prepare(sampleRate);
-    pesto.prepare(sampleRate, samplesPerBlock);
-    setLatencySamples(pesto.getLatencySamples());
+    yin.reset();
 
     bassBuffer.setSize(1, samplesPerBlock);
     pitchIsValid = false;
@@ -124,7 +61,7 @@ void BassEmulatorProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
     if (onset.process(inputData, numSamples))
         envFollower.triggerAttack();
 
-    float detectedPitch = pesto.process(inputData, numSamples);
+    float detectedPitch = yin.process(inputData, numSamples, getSampleRate());
     if (detectedPitch > 0.0f)
     {
         currentPitch = detectedPitch / 2.0f;
