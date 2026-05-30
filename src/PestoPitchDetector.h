@@ -3,23 +3,48 @@
 #include <atomic>
 #include <cstdio>
 #include <vector>
+#include <algorithm>
 #include <anira/anira.h>
 #include <PestoModelData.h>
 
 /**
- * PESTO pitch detector обёртка поверх ANIRA + ONNX Runtime.
+ * PESTO pitch detector обёртка поверх ANIRA + ONNX Runtime (streaming-режим).
  *
- * Модель `models/pesto.onnx` встроена через `juce_add_binary_data` (см. CMakeLists.txt)
- * и доступна как `PestoModelData::pesto_onnx`. Параметры окна/хопа должны совпадать
- * с экспортом `ml/utils/export_pesto_onnx.py` — мы фиксируем sr=44100 и hop=10 мс.
+ * Модель `models/pesto.onnx` экспортируется скриптом `ml/utils/export_pesto_onnx.py`
+ * через `load_model(streaming=True, mirror=0.8)` + обёртка `StatelessPESTO`.
+ * См. ROADMAP.md → Шаг 2.5 и backlog «finetune PESTO под realtime-режим».
  *
- * Архитектура:
- *   - Аудио идёт стримом через ANIRA RingBuffer (preprocess_input_size = hop).
- *   - PESTO выход — НЕ аудио, а два вектора (F0, confidence). Помечаем их как
- *     non-streamable (postprocess_output_size = 0): ANIRA кладёт их в потокобезопасное
- *     atomic-хранилище, читаем оттуда из audio-треда без аллокаций и блокировок.
- *   - Кастомный pre_process берёт перекрывающиеся окна (новые kHopSamples сэмплов +
- *     kWindowSamples - kHopSamples от прошлого вызова), post_process — default.
+ * Ключевые отличия от предыдущей offline-реализации:
+ *
+ *  1. **Streaming CQT.** Модель — это `CachedConv1d` внутри `StreamingCQT`, левый
+ *     паддинг свёртки = реальные прошлые сэмплы (cache), правый край = zeros
+ *     (mirror_fn=zeros, фракция mirror=0.8). Никаких reflect-pad артефактов.
+ *
+ *  2. **Один фрейм на вызов** (вместо 26). На каждый hop=441 сэмплов получаем
+ *     ровно один F0/conf. ~25× меньше CPU.
+ *
+ *  3. **Cache state в C++.** ONNX Runtime stateless → выносим cache наружу как
+ *     явный input/output тензор. Храним в `PestoProcessor::cache_state`,
+ *     подкладываем в pre_process, читаем cache_out в post_process.
+ *
+ * ANIRA конфиг:
+ *   inputs:   [0] audio  streamable     (1, kHopSamples)
+ *             [1] cache  non-streamable (1, kCacheSize)
+ *   outputs:  [0] f0_hz       non-streamable (1, 1)
+ *             [1] confidence  non-streamable (1, 1)
+ *             [2] volume      non-streamable (1, 1)
+ *             [3] activations non-streamable (1, 1, kActivationsBins)
+ *             [4] cache_out   non-streamable (1, kCacheSize)
+ *
+ * Бюджет задержки «струна → бас в наушниках» с Reaper buffer 256:
+ *   ADC + analog               ~  2 мс
+ *   DAW round-trip (in+out)    ~ 12 мс
+ *   PESTO chunk accumulation   ~  5 мс (avg, max 10)
+ *   PESTO mirror algorithmic   ~ 18 мс  (фрейм центрирован 18 мс назад)
+ *   PESTO compute + worker     ~  3 мс
+ *   DAC + analog               ~  3 мс
+ *   ─────────────────────────────────
+ *   Total                      ~ 43 мс
  *
  * API мимикрирует YinPitchDetector: `process(buf, n)` возвращает F0 (Гц) или 0.0f
  * пока валидного питча ещё нет (initial buffering или unvoiced).
@@ -27,14 +52,27 @@
 class PestoPitchDetector
 {
 public:
-    // ── параметры модели (должны совпадать с pesto.onnx) ──────────────────────
-    static constexpr int          kSampleRate      = 44100;
-    static constexpr int          kHopSamples      = 441;     // 10 мс
-    static constexpr int          kWindowSamples   = 11025;   // ~250 мс — контекст последнего кадра
-    static constexpr int          kFramesPerWindow = 26;      // kWindowSamples/kHopSamples + 1, см. meta.json
-    static constexpr float        kVoicedThreshold = 0.5f;    // PESTO confidence порог
-    static constexpr float        kMaxInferenceMs  = 20.0f;   // бюджет на одну инференс-вызов (замер: ~5–6 мс)
-    static constexpr unsigned int kWarmUp          = 2;       // прогрев чтобы первый реальный инференс не тормозил
+    // ── параметры модели (должны совпадать с pesto.onnx + pesto_onnx_meta.json) ──
+    static constexpr int          kSampleRate        = 44100;
+    static constexpr int          kHopSamples        = 441;    // 10 мс — chunk на вызов
+    static constexpr int          kCacheSize         = 4651;   // mirror=0.8: 8192 - 441 - 3100
+    static constexpr int          kMirrorLagSamples  = 775;    // (1-0.8) * (8192-441)/2
+    static constexpr int          kActivationsBins   = 384;    // output_dim Resnet1d
+    static constexpr int          kFramesPerCall     = 1;      // один фрейм на inference
+    static constexpr float        kVoicedThreshold   = 0.5f;   // PESTO confidence порог
+    static constexpr float        kMaxInferenceMs    = 20.0f;  // SLA на inference
+    static constexpr unsigned int kWarmUp            = 2;      // прогрев
+
+    // Output tensor indices in ANIRA postprocess (соответствуют output_names ONNX-графа)
+    static constexpr size_t kOutF0    = 0;
+    static constexpr size_t kOutConf  = 1;
+    static constexpr size_t kOutVol   = 2;
+    static constexpr size_t kOutActs  = 3;
+    static constexpr size_t kOutCache = 4;
+
+    // Input tensor indices
+    static constexpr size_t kInAudio = 0;
+    static constexpr size_t kInCache = 1;
 
     PestoPitchDetector()
         : m_config(
@@ -42,14 +80,19 @@ public:
                     reinterpret_cast<void*>(const_cast<char*>(PestoModelData::pesto_onnx)),
                     static_cast<size_t>(PestoModelData::pesto_onnxSize),
                     anira::InferenceBackend::ONNX) },
-              { anira::TensorShape({ { kWindowSamples } },
-                                   { { kFramesPerWindow }, { kFramesPerWindow } },
-                                   anira::InferenceBackend::ONNX) },
+              { anira::TensorShape(
+                    /* input shapes  */ { { 1, kHopSamples }, { 1, kCacheSize } },
+                    /* output shapes */ { { 1, kFramesPerCall },
+                                          { 1, kFramesPerCall },
+                                          { 1, kFramesPerCall },
+                                          { 1, kFramesPerCall, kActivationsBins },
+                                          { 1, kCacheSize } },
+                    anira::InferenceBackend::ONNX) },
               anira::ProcessingSpec(
-                  /* preprocess_input_channels   */ { 1 },
-                  /* postprocess_output_channels */ { 1, 1 },
-                  /* preprocess_input_size       */ { static_cast<size_t>(kHopSamples) },
-                  /* postprocess_output_size     */ { 0, 0 }   // 0 -> non-streamable atomic storage
+                  /* preprocess_input_channels   */ { 1, 1 },
+                  /* postprocess_output_channels */ { 1, 1, 1, 1, 1 },
+                  /* preprocess_input_size       */ { static_cast<size_t>(kHopSamples), 0 },
+                  /* postprocess_output_size     */ { 0, 0, 0, 0, 0 }
               ),
               kMaxInferenceMs,
               kWarmUp),
@@ -57,7 +100,6 @@ public:
           m_handler(m_processor, m_config)
     {
         // SessionElement::m_current_backend defaults to CUSTOM — must set ONNX explicitly
-        // so the inference thread uses OnnxRuntimeProcessor, not the pass-through stub.
         m_handler.set_inference_backend(anira::InferenceBackend::ONNX);
     }
 
@@ -72,6 +114,7 @@ public:
     void reset()
     {
         m_handler.reset();
+        m_processor.reset_cache();
         m_hasValid.store(false, std::memory_order_release);
         m_lastPitch.store(0.0f, std::memory_order_relaxed);
         m_debugCount = 0;
@@ -80,67 +123,38 @@ public:
     /** Толкаем блок аудио в инференс-пайплайн и возвращаем последний валидный F0 (Гц).
      *  Возврат 0.0f означает «питч ещё не определён» — синтез должен пропустить блок.
      *
-     *  Паттерн push_data() + pop_data(nullptr, 0):
-     *
-     *  1. push_data() → new_data_submitted() — отправляет аудио на фоновый инференс.
-     *
-     *  2. pop_data(nullptr, 0) → new_data_request() → post_process() → set_output()
-     *     Именно через pop_data/process вызывается new_data_request(), который
-     *     (когда инференс завершится) запускает post_process() → заполняет atomic storage.
-     *     num_output_samples=0 критически важен: оба выхода non-streamable
-     *     (postprocess_output_size={0,0}), хранилище — MemoryBlock<atomic<float>>[26].
-     *     Без нуля process_output() пытается прочитать get_output(i, 0..blockSize-1),
-     *     а blockSize (512) > 26 → OOB → memory corruption → automute/crash.
-     *
-     *  3. get_output() читает F0/confidence из atomic storage, заполненного п.2.
+     *  push_data() пихает аудио в RingBuffer ANIRA. Как только там накопилось
+     *  kHopSamples — triggers pre_process → ONNX run → post_process в worker-треде.
+     *  pop_data(nullptr, 0) дёргает new_data_request() в audio-треде, который
+     *  передаёт результаты в atomic storage — оттуда читаем get_output().
      */
     float process(const float* monoInput, int numSamples)
     {
-        // 1. Пушим аудио
         const float* const inputCh[1] = { monoInput };
         m_handler.push_data(inputCh, static_cast<size_t>(numSamples), 0);
-
-        // 2. pop с нулём сэмплов: запускает new_data_request() → post_process(),
-        //    но не вызывает get_output() внутри process_output() (цикл sample<0 не идёт).
         m_handler.pop_data(static_cast<float* const*>(nullptr), 0, 0);
 
-        // 3. Читаем последний кадр из atomic storage (заполнен, когда инференс готов).
-        // Берём кадр в самой свежей позиции окна. Можно сдвинуться на -7 кадров
-        // для лучшего контекста ценой +70 мс задержки — оставлено на будущее.
-        const float conf = m_processor.get_output(1, kFramesPerWindow - 1);
-        const float f0   = m_processor.get_output(0, kFramesPerWindow - 1);
+        const float conf = m_processor.get_output(kOutConf, 0);
+        const float f0   = m_processor.get_output(kOutF0,   0);
 
-        // ── DEBUG: log first 500 blocks to %TEMP%\pesto_debug.log ────────────
+        // ── DEBUG: log first 500 blocks to D:\projects\BassEmulatorVST\pesto_debug.log
         ++m_debugCount;
         if (m_debugCount <= 500 && m_debugCount % 50 == 0)
         {
-            // Also collect the max conf across all kFramesPerWindow frames.
-            float maxConf = 0.0f;
-            float maxF0   = 0.0f;
-            for (int fi = 0; fi < kFramesPerWindow; ++fi)
-            {
-                float c = m_processor.get_output(1, fi);
-                float p = m_processor.get_output(0, fi);
-                if (c > maxConf) { maxConf = c; maxF0 = p; }
-            }
             if (FILE* fp = std::fopen("D:\\projects\\BassEmulatorVST\\pesto_debug.log", "a"))
             {
                 std::fprintf(fp,
-                    "[%d] last_frame: conf=%.4f f0=%.2f | best_frame: conf=%.4f f0=%.2f | hasValid=%d\n",
-                    m_debugCount, conf, f0, maxConf, maxF0,
+                    "[%d] conf=%.4f f0=%.2f | hasValid=%d\n",
+                    m_debugCount, conf, f0,
                     (int)m_hasValid.load(std::memory_order_relaxed));
                 std::fclose(fp);
             }
         }
-        // ─────────────────────────────────────────────────────────────────────
 
-        if (conf >= kVoicedThreshold)
+        if (conf >= kVoicedThreshold && f0 > 0.0f)
         {
-            if (f0 > 0.0f)
-            {
-                m_lastPitch.store(f0, std::memory_order_relaxed);
-                m_hasValid.store(true, std::memory_order_release);
-            }
+            m_lastPitch.store(f0, std::memory_order_relaxed);
+            m_hasValid.store(true, std::memory_order_release);
         }
 
         return getCurrentPitch();
@@ -154,28 +168,55 @@ public:
              : 0.0f;
     }
 
-    /** Латентность инференс-конвейера в сэмплах (для setLatencySamples в processor). */
+    /** Латентность пайплайна в сэмплах (для setLatencySamples в processor).
+     *  ANIRA latency = chunk accumulation + worker queue. Mirror lag добавляется
+     *  отдельно: фрейм PESTO «относится» к моменту kMirrorLagSamples назад. */
     int getLatencySamples() const
     {
-        return static_cast<int>(m_handler.get_latency());
+        return static_cast<int>(m_handler.get_latency()) + kMirrorLagSamples;
     }
 
 private:
-    // Перекрывающиеся окна: на каждый триггер инференса (раз в kHopSamples сэмплов)
-    // вынимаем kHopSamples новых + (kWindowSamples - kHopSamples) старых из ring-buffer.
-    // post_process не переопределяем — default impl кладёт non-streamable выходы
-    // в atomic storage, читаемое через m_processor.get_output().
+    // PestoProcessor хранит cache_state как member (не RT-safe atomic — обновляется
+    // только из inference-треда: pre_process читает, post_process пишет).
     struct PestoProcessor : anira::PrePostProcessor
     {
-        using anira::PrePostProcessor::PrePostProcessor;
+        std::vector<float> cache_state;
+
+        explicit PestoProcessor(anira::InferenceConfig& cfg)
+            : anira::PrePostProcessor(cfg), cache_state(kCacheSize, 0.0f) {}
+
         void pre_process(std::vector<anira::RingBuffer>& input,
                          std::vector<anira::BufferF>& output,
                          anira::InferenceBackend /*backend*/) override
         {
-            pop_samples_from_buffer(input[0], output[0],
-                                    static_cast<size_t>(PestoPitchDetector::kHopSamples),
-                                    static_cast<size_t>(PestoPitchDetector::kWindowSamples
-                                                        - PestoPitchDetector::kHopSamples));
+            // input #0: audio — забираем kHopSamples из RingBuffer
+            pop_samples_from_buffer(input[kInAudio], output[kInAudio],
+                                    static_cast<size_t>(kHopSamples));
+
+            // input #1: cache — копируем member-vector в ONNX-input буфер
+            float* cache_dst = output[kInCache].data();
+            std::copy(cache_state.begin(), cache_state.end(), cache_dst);
+        }
+
+        void post_process(std::vector<anira::BufferF>& input,
+                          std::vector<anira::RingBuffer>& /*output*/,
+                          anira::InferenceBackend /*backend*/) override
+        {
+            // outputs 0,1,2: f0/conf/vol → atomic storage (один float каждый)
+            set_output(input[kOutF0].data()[0],   kOutF0,   0);
+            set_output(input[kOutConf].data()[0], kOutConf, 0);
+            set_output(input[kOutVol].data()[0],  kOutVol,  0);
+            // output 3 (activations) пропускаем — не используется для realtime
+
+            // output 4: cache_out → копируем в member-vector для следующего вызова
+            const float* cache_src = input[kOutCache].data();
+            std::copy(cache_src, cache_src + kCacheSize, cache_state.begin());
+        }
+
+        void reset_cache()
+        {
+            std::fill(cache_state.begin(), cache_state.end(), 0.0f);
         }
     };
 

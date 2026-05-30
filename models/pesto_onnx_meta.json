@@ -3,31 +3,78 @@
   "sample_rate": 44100,
   "step_size_ms": 10.0,
   "hop_samples": 441,
+  "chunk_size": 441,
+  "cache_size": 4651,
+  "mirror": 0.8,
+  "mirror_fn": "zeros",
+  "max_batch_size": 1,
   "opset": 17,
-  "input": {
-    "name": "audio",
-    "shape": [
-      "num_samples"
-    ],
-    "dtype": "float32",
-    "note": "mono waveform, MUST be at sample_rate Hz"
-  },
+  "inputs": [
+    {
+      "name": "audio",
+      "shape": [
+        "batch",
+        441
+      ],
+      "dtype": "float32",
+      "note": "mono waveform chunk, 441 samples @ 44100 Hz"
+    },
+    {
+      "name": "cache",
+      "shape": [
+        "batch",
+        4651
+      ],
+      "dtype": "float32",
+      "note": "streaming state from previous call; zeros on first call"
+    }
+  ],
   "outputs": [
     {
       "name": "f0_hz",
       "shape": [
-        "num_frames"
+        "batch",
+        "frames"
       ],
       "dtype": "float32",
-      "note": "fundamental frequency in Hz (convert_to_freq=True)"
+      "note": "F0 in Hz, 1 frame per call when chunk_size == hop_samples"
     },
     {
       "name": "confidence",
       "shape": [
-        "num_frames"
+        "batch",
+        "frames"
       ],
       "dtype": "float32",
       "note": "voicing confidence in [0, 1]"
+    },
+    {
+      "name": "volume",
+      "shape": [
+        "batch",
+        "frames"
+      ],
+      "dtype": "float32",
+      "note": "frame energy"
+    },
+    {
+      "name": "activations",
+      "shape": [
+        "batch",
+        "frames",
+        "bins"
+      ],
+      "dtype": "float32",
+      "note": "raw pitch activation logits"
+    },
+    {
+      "name": "cache_out",
+      "shape": [
+        "batch",
+        4651
+      ],
+      "dtype": "float32",
+      "note": "updated streaming state; feed back as 'cache' on next call"
     }
   ]
 }

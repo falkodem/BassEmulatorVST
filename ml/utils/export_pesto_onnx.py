@@ -1,25 +1,34 @@
-"""Export pretrained PESTO to ONNX for real-time pitch detection in the JUCE plugin.
+"""Export pretrained PESTO to ONNX in **streaming** mode for realtime use in the JUCE plugin.
 
-`pesto-pitch` 2.0.1 ships no ONNX export — its `utils/export.py` only writes
-CSV/NPZ/PNG *result* files.  This script builds the ONNX graph manually:
+Per PESTO v2 (arxiv 2508.01488) the proper realtime usage is:
+  * `load_model(..., streaming=True, mirror=1.0)` — switches CQT from `RegularCQT`
+    (reflect-pad both sides, designed for offline) to `StreamingCQT` with
+    `CachedConv1d` (left pad = cache of real previous samples, right pad = mirror_fn fake).
+  * The model becomes stateful: after each forward, `CachedConv1d.cache.pad` holds the
+    last `padding` input samples for the next call.
+  * ONNX Runtime is stateless, so we wrap the model in `StatelessPESTO`
+    (taken from `realtime/onnx_wrapper.py` of the PESTO repo) which exposes
+    that cache as an explicit input/output tensor of the ONNX graph.
 
-    audio waveform (mono, fixed sample rate)  ->  PESTO  ->  (f0_hz, confidence)
+ONNX I/O after this script:
+    inputs:  audio (1, chunk_size), cache (1, cache_size)
+    outputs: pred, confidence, volume, activations, cache_out (1, cache_size)
 
-The whole PESTO pipeline is pure-torch and traceable:
-  HarmonicCQT (nn.Conv1d kernels)  ->  Resnet1d encoder  ->  reduce_activations,
-plus a ConfidenceClassifier branch.  The only non-ONNX op is `torch.view_as_complex`
-in `Preprocessor.forward`; we monkeypatch it with an equivalent magnitude
-computation sqrt(re^2 + im^2) that needs no complex dtype.
+The model receives `chunk_size = hop_samples` (441 = 10 ms @ 44.1 kHz) on each call
+and emits **one** frame — vs ~26 frames with the previous offline export.
 
-The CQT kernels are baked for a single sample rate (default 44100, the project
-standard), so the exported model MUST be fed audio at exactly that rate.
+`mirror_fn=refill` (RefillPad1d) is preferred over the default `zeros` for
+quasi-periodic signals (guitar): on the right edge it duplicates the last
+samples of [cache + chunk] instead of zero-padding. `HarmonicCQT` does not
+expose `mirror_fn`, so we patch the `mirror` submodule of each `CachedConv1d`
+in-place after `load_model`.
 
-The sample axis is exported as a dynamic axis: the same model accepts a whole
-file (for verification here) or a fixed analysis window (for the plugin).
+The CQT kernels are baked for a fixed sample rate. The plugin MUST feed audio
+at exactly `--sample-rate` (default 44100).
 
-Outputs (into models/, which is gitignored):
-  models/pesto.onnx            — the ONNX graph
-  models/pesto_onnx_meta.json  — I/O spec for the C++ side (Block 3)
+Outputs (into models/, gitignored):
+  models/pesto.onnx
+  models/pesto_onnx_meta.json
 
 Usage
 -----
@@ -30,15 +39,18 @@ Usage
 import argparse
 import json
 import logging
+import math
 import sys
 import types
 from pathlib import Path
+from typing import Dict, Tuple
 
 import numpy as np
 import torch
 import torch.nn as nn
 
 from pesto.loader import load_model
+from pesto.utils.cached_conv import CachedConv1d, RefillPad1d
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger("export_pesto_onnx")
@@ -49,139 +61,303 @@ ROOT = Path(__file__).resolve().parents[2]
 def _preprocessor_forward_no_complex(self, x, sr=None):
     """Drop-in replacement for pesto `Preprocessor.forward` without `torch.view_as_complex`.
 
-    Original: `view_as_complex(hcqt).permute(0, 3, 1, 2)` then `to_log` (complex
-    `.abs()`).  Here we compute the magnitude sqrt(re^2 + im^2) directly from the
-    (..., 2) real/imag layout — numerically identical, but ONNX can trace it.
+    Original computes `view_as_complex(hcqt).abs()` which uses a complex dtype
+    op that ONNX cannot trace. The HCQT already outputs (..., 2) real/imag pairs,
+    so we compute the magnitude sqrt(re^2 + im^2) directly — numerically identical.
     """
-    hcqt = self.hcqt(x, sr=sr)                                  # (batch, harmonics, freqs, time, 2)
-    mag = torch.sqrt(hcqt[..., 0] ** 2 + hcqt[..., 1] ** 2)     # (batch, harmonics, freqs, time)
-    mag = mag.permute(0, 3, 1, 2)                               # (batch, time, harmonics, freqs)
-    return self.to_log(mag)                                     # log-magnitude, matches original
+    hcqt = self.hcqt(x, sr=sr)                                  # (B, harmonics, freqs, time, 2)
+    mag = torch.sqrt(hcqt[..., 0] ** 2 + hcqt[..., 1] ** 2)     # (B, harmonics, freqs, time)
+    mag = mag.permute(0, 3, 1, 2)                               # (B, time, harmonics, freqs)
+    return self.to_log(mag)
 
 
-class PestoOnnxWrapper(nn.Module):
-    """Wraps PESTO so `forward(audio)` -> (f0_hz, confidence), both shape (num_frames,).
+def _patch_mirror_to_refill(model: nn.Module) -> int:
+    """Replace each CachedConv1d.mirror (ZeroPad1d by default) with RefillPad1d.
 
-    Input is a 1-D mono waveform at the baked-in sample rate; `sr=None` makes the
-    preprocessor reuse its pre-built CQT kernels instead of rebuilding them.
+    `HarmonicCQT.__init__` does not forward `mirror_fn` down to `CachedConv1d`,
+    so the only way to switch to refill-pad on the right edge is to walk the
+    model post-construction and swap the submodule. We extract the original
+    right-padding amount from `mirror.padding[1]` (set by CachedConv1d as
+    `(0, mirrored_samples)`) and rebuild with `RefillPad1d`.
+
+    Returns the number of patched modules.
+    """
+    patched = 0
+    for name, m in model.named_modules():
+        if not isinstance(m, CachedConv1d):
+            continue
+        mir = m.mirror
+        pad_attr = getattr(mir, "padding", None)
+        if pad_attr is None:
+            log.warning("Module %s mirror has no .padding, skipping", name)
+            continue
+        # padding is typically a tuple (left, right) for 1d pad layers
+        if isinstance(pad_attr, int):
+            right = pad_attr
+        else:
+            right = pad_attr[1] if len(pad_attr) >= 2 else pad_attr[0]
+        if right == 0:
+            log.info("Module %s has zero right-mirror, leaving as-is", name)
+            continue
+        m.mirror = RefillPad1d((0, right))
+        patched += 1
+        log.info("Patched %s: ZeroPad1d(0, %d) -> RefillPad1d((0, %d))",
+                 name, right, right)
+    return patched
+
+
+class StatelessPESTO(nn.Module):
+    """Externalize PESTO cache state as explicit input/output for ONNX Runtime.
+
+    Adapted from `realtime/onnx_wrapper.py` in the PESTO repository. Collects
+    all `CachedConv1d.cache.pad` buffers into a single flattened tensor on
+    output, and scatters an input cache tensor back into them before forward.
     """
 
     def __init__(self, model: nn.Module):
         super().__init__()
         self.model = model
+        self.cache_size_dict: Dict[str, Tuple[int, ...]] = {}
+        for name, m in self.model.named_modules():
+            if isinstance(m, CachedConv1d) and hasattr(m.cache, "pad"):
+                self.cache_size_dict[name + "-cache"] = tuple(m.cache.pad.shape)
+        self.cache_size = sum(math.prod(s) for s in self.cache_size_dict.values())
 
-    def forward(self, audio: torch.Tensor):
-        preds, confidence, _vol = self.model(
-            audio, sr=None, convert_to_freq=True, return_activations=False
+    def init_cache(self, batch_size: int = 1, device: str = "cpu") -> torch.Tensor:
+        if self.cache_size == 0:
+            return torch.empty(batch_size, 0, device=device)
+        return torch.zeros(batch_size, self.cache_size, device=device)
+
+    def _set_caches(self, cache: torch.Tensor) -> None:
+        """Write the flat input cache back into each CachedConv1d.cache.pad."""
+        if cache.numel() == 0:
+            return
+        cache_flat = cache[0]
+        ptr = 0
+        for name, m in self.model.named_modules():
+            if isinstance(m, CachedConv1d) and hasattr(m.cache, "pad"):
+                shape = self.cache_size_dict[name + "-cache"]
+                n = math.prod(shape)
+                m.cache.pad = cache_flat[ptr:ptr + n].view(shape)
+                ptr += n
+
+    def _gather_caches(self, batch_size: int) -> torch.Tensor:
+        """Read each CachedConv1d.cache.pad into a single flat tensor."""
+        parts = []
+        for name, m in self.model.named_modules():
+            if isinstance(m, CachedConv1d) and hasattr(m.cache, "pad"):
+                parts.append(m.cache.pad.flatten())
+        if not parts:
+            return torch.empty(batch_size, 0)
+        cat = torch.cat(parts, dim=0)
+        return cat.unsqueeze(0).expand(batch_size, -1)
+
+    def forward(self, audio: torch.Tensor, cache: torch.Tensor):
+        """audio: (B, chunk_size), cache: (B, cache_size) -> (f0, conf, vol, acts, cache_out)."""
+        self._set_caches(cache)
+        preds, confidence, vol, activations = self.model(
+            audio, sr=None, convert_to_freq=True, return_activations=True
         )
-        return preds, confidence
+        cache_out = self._gather_caches(audio.size(0))
+        return preds, confidence, vol, activations, cache_out
 
 
-def build_model(model_name: str, step_size: float, sample_rate: int) -> nn.Module:
-    log.info("Loading PESTO '%s' (step_size=%.1f ms, sr=%d Hz)", model_name, step_size, sample_rate)
-    model = load_model(model_name, step_size=step_size, sampling_rate=sample_rate)
+def build_model(model_name: str,
+                step_size: float,
+                sample_rate: int,
+                max_batch_size: int,
+                mirror: float,
+                mirror_fn: str) -> nn.Module:
+    log.info("Loading PESTO '%s' (step_size=%.1f ms, sr=%d Hz, streaming, "
+             "mirror=%.2f, mirror_fn=%s)",
+             model_name, step_size, sample_rate, mirror, mirror_fn)
+    model = load_model(
+        model_name,
+        step_size=step_size,
+        sampling_rate=sample_rate,
+        streaming=True,
+        max_batch_size=max_batch_size,
+        mirror=mirror,
+    )
     model.eval()
-    # Bypass torch.view_as_complex (not ONNX-exportable) in the CQT preprocessor.
     model.preprocessor.forward = types.MethodType(_preprocessor_forward_no_complex, model.preprocessor)
+    if mirror_fn == "refill":
+        n_patched = _patch_mirror_to_refill(model)
+        log.info("Patched %d CachedConv1d mirror(s) to RefillPad1d", n_patched)
+    else:
+        log.info("Using default mirror_fn='zeros' (no patching)")
     return model
 
 
-def export_onnx(model: nn.Module, sample_rate: int, opset: int, output_path: Path) -> None:
-    wrapper = PestoOnnxWrapper(model).eval()
+def export_onnx(model: nn.Module,
+                chunk_size: int,
+                opset: int,
+                output_path: Path) -> Tuple[int, int]:
+    """Export streaming PESTO as ONNX. Returns (chunk_size, cache_size)."""
+    wrapper = StatelessPESTO(model).eval()
+    cache_size = wrapper.cache_size
+    log.info("Cache size: %d float32 (%d shapes: %s)",
+             cache_size, len(wrapper.cache_size_dict),
+             {k: v for k, v in wrapper.cache_size_dict.items()})
 
-    # 1 s of audio is plenty to produce many CQT frames during tracing.
-    dummy = torch.randn(sample_rate, dtype=torch.float32)
+    dummy_audio = torch.randn(1, chunk_size, dtype=torch.float32).clip(-1, 1)
+    dummy_cache = wrapper.init_cache(batch_size=1)
     with torch.no_grad():
-        f0, conf = wrapper(dummy)
-    log.info("Wrapper sanity OK: %d samples -> %d frames (f0 %s, conf %s)",
-             dummy.numel(), f0.numel(), tuple(f0.shape), tuple(conf.shape))
+        preds, conf, vol, acts, cache_out = wrapper(dummy_audio, dummy_cache)
+    log.info("Wrapper sanity: audio=%s cache=%s -> pred=%s conf=%s vol=%s acts=%s cache_out=%s",
+             tuple(dummy_audio.shape), tuple(dummy_cache.shape),
+             tuple(preds.shape), tuple(conf.shape), tuple(vol.shape),
+             tuple(acts.shape), tuple(cache_out.shape))
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     torch.onnx.export(
         wrapper,
-        (dummy,),
+        (dummy_audio, dummy_cache),
         str(output_path),
-        input_names=["audio"],
-        output_names=["f0_hz", "confidence"],
+        input_names=["audio", "cache"],
+        output_names=["f0_hz", "confidence", "volume", "activations", "cache_out"],
         dynamic_axes={
-            "audio": {0: "num_samples"},
-            "f0_hz": {0: "num_frames"},
-            "confidence": {0: "num_frames"},
+            "audio":      {0: "batch"},
+            "cache":      {0: "batch"},
+            "f0_hz":      {0: "batch", 1: "frames"},
+            "confidence": {0: "batch", 1: "frames"},
+            "volume":     {0: "batch", 1: "frames"},
+            "activations": {0: "batch", 1: "frames"},
+            "cache_out":  {0: "batch"},
         },
         opset_version=opset,
         do_constant_folding=True,
     )
     log.info("Exported ONNX -> %s (%.1f KB)", output_path, output_path.stat().st_size / 1024)
+    return chunk_size, cache_size
 
 
-def verify(model: nn.Module, onnx_path: Path, sample_rate: int, audio_path: Path) -> bool:
-    """Compare ONNX output against torch reference on a real recording."""
+def verify_streaming(model: nn.Module,
+                     onnx_path: Path,
+                     sample_rate: int,
+                     chunk_size: int,
+                     cache_size: int,
+                     audio_path: Path) -> bool:
+    """Run ONNX chunk-by-chunk and compare with the same streaming torch model.
+
+    Both should give bitwise-close results since the ONNX graph IS the same
+    torch model + cache externalization. Catches export bugs (missing ops,
+    state mismatch, etc.), not algorithmic regressions vs offline.
+    """
     import librosa
     import onnxruntime as ort
 
     audio, _ = librosa.load(str(audio_path), sr=sample_rate, mono=True)
     audio = audio.astype(np.float32)
-    log.info("Verifying on %s (%d samples, %.2f s)", audio_path.name, audio.size, audio.size / sample_rate)
+    n_chunks = audio.size // chunk_size
+    audio = audio[: n_chunks * chunk_size]
+    log.info("Verifying on %s (%d samples = %d chunks of %d)",
+             audio_path.name, audio.size, n_chunks, chunk_size)
 
+    # Torch reference: feed same chunks, model maintains its own cache internally
+    model.eval()
+    # Reset internal cache by re-zeroing all CachedConv1d.cache.pad
+    for m in model.modules():
+        if isinstance(m, CachedConv1d) and hasattr(m.cache, "pad"):
+            m.cache.pad = torch.zeros_like(m.cache.pad)
+
+    ref_f0, ref_conf = [], []
     with torch.no_grad():
-        ref_f0, ref_conf, _ = model(
-            torch.from_numpy(audio), sr=None, convert_to_freq=True, return_activations=False
-        )
-    ref_f0 = ref_f0.numpy()
-    ref_conf = ref_conf.numpy()
+        for i in range(n_chunks):
+            chunk = torch.from_numpy(audio[i * chunk_size:(i + 1) * chunk_size]).unsqueeze(0)
+            f0, conf, _vol = model(chunk, sr=None, convert_to_freq=True, return_activations=False)
+            ref_f0.append(f0.item())
+            ref_conf.append(conf.item())
+    ref_f0 = np.array(ref_f0, dtype=np.float32)
+    ref_conf = np.array(ref_conf, dtype=np.float32)
 
+    # ONNX run with externalized cache
     sess = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
-    onnx_f0, onnx_conf = sess.run(None, {"audio": audio})
+    cache_state = np.zeros((1, cache_size), dtype=np.float32)
+    onnx_f0, onnx_conf = [], []
+    for i in range(n_chunks):
+        chunk = audio[i * chunk_size:(i + 1) * chunk_size].reshape(1, -1)
+        out = sess.run(None, {"audio": chunk, "cache": cache_state})
+        f0, conf, _vol, _acts, cache_state = out
+        onnx_f0.append(float(f0.ravel()[0]))
+        onnx_conf.append(float(conf.ravel()[0]))
+    onnx_f0 = np.array(onnx_f0, dtype=np.float32)
+    onnx_conf = np.array(onnx_conf, dtype=np.float32)
 
-    if onnx_f0.shape != ref_f0.shape or onnx_conf.shape != ref_conf.shape:
-        log.error("Shape mismatch: f0 onnx %s vs ref %s | conf onnx %s vs ref %s",
-                  onnx_f0.shape, ref_f0.shape, onnx_conf.shape, ref_conf.shape)
-        return False
-
-    f0_abs = np.max(np.abs(onnx_f0 - ref_f0))
-    # cents error only where both are voiced-ish frequencies
+    f0_abs = float(np.max(np.abs(onnx_f0 - ref_f0)))
     mask = (ref_f0 > 1.0) & (onnx_f0 > 1.0)
-    cents = 1200.0 * np.abs(np.log2(onnx_f0[mask] / ref_f0[mask])) if mask.any() else np.array([0.0])
-    conf_abs = np.max(np.abs(onnx_conf - ref_conf))
-
-    log.info("f0:   max abs %.4e Hz | max %.4f cents | mean %.4f cents",
-             f0_abs, cents.max(), cents.mean())
+    if mask.any():
+        cents = 1200.0 * np.abs(np.log2(onnx_f0[mask] / ref_f0[mask]))
+        log.info("f0:   max abs %.4e Hz | max %.4f cents | mean %.4f cents",
+                 f0_abs, float(cents.max()), float(cents.mean()))
+    else:
+        cents = np.array([0.0])
+        log.warning("No voiced frames detected — cents check skipped")
+    conf_abs = float(np.max(np.abs(onnx_conf - ref_conf)))
     log.info("conf: max abs %.4e", conf_abs)
+    log.info("voiced ratio (ref): %.2f", float((ref_conf >= 0.5).mean()))
 
-    ok = cents.max() < 1.0 and conf_abs < 1e-3
+    ok = (cents.max() < 1.0) and (conf_abs < 1e-3)
     log.info("Verification %s", "PASSED" if ok else "FAILED")
     return ok
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Export pretrained PESTO to ONNX.")
+    parser = argparse.ArgumentParser(description="Export streaming PESTO to ONNX.")
     parser.add_argument("--model-name", default="mir-1k_g7", help="PESTO checkpoint name")
     parser.add_argument("--step-size", type=float, default=10.0, help="hop size in ms")
     parser.add_argument("--sample-rate", type=int, default=44100, help="baked-in sample rate")
     parser.add_argument("--opset", type=int, default=17, help="ONNX opset version")
+    parser.add_argument("--mirror", type=float, default=0.8,
+                        help="fraction of right-edge fake samples (1.0 = zero added latency, "
+                             "0.5 = ~44 ms latency / best accuracy). 0.8 is the elbow of the "
+                             "latency/accuracy curve on guitar recordings.")
+    parser.add_argument("--mirror-fn", choices=["zeros", "refill"], default="zeros",
+                        help="how to fill the right edge fake zone. 'zeros' (default) works "
+                             "best on the pretrained checkpoint; 'refill' is intended for "
+                             "future realtime-finetuned models (see ROADMAP).")
+    parser.add_argument("--max-batch-size", type=int, default=1, help="ONNX max batch dim")
     parser.add_argument("--output", type=Path, default=ROOT / "models" / "pesto.onnx")
     parser.add_argument("--verify-audio", type=Path, default=None,
                         help="WAV to verify against (default: first file in data/v0/guitar/)")
     parser.add_argument("--no-verify", action="store_true", help="skip numeric verification")
     args = parser.parse_args()
 
-    model = build_model(args.model_name, args.step_size, args.sample_rate)
-    export_onnx(model, args.sample_rate, args.opset, args.output)
-
     hop_samples = int(args.step_size * args.sample_rate / 1000 + 0.5)
+    chunk_size = hop_samples  # 1 hop per call = 1 output frame
+
+    model = build_model(args.model_name, args.step_size, args.sample_rate,
+                        args.max_batch_size, args.mirror, args.mirror_fn)
+    _, cache_size = export_onnx(model, chunk_size, args.opset, args.output)
+
     meta = {
         "model_name": args.model_name,
         "sample_rate": args.sample_rate,
         "step_size_ms": args.step_size,
         "hop_samples": hop_samples,
+        "chunk_size": chunk_size,
+        "cache_size": cache_size,
+        "mirror": args.mirror,
+        "mirror_fn": args.mirror_fn,
+        "max_batch_size": args.max_batch_size,
         "opset": args.opset,
-        "input": {"name": "audio", "shape": ["num_samples"], "dtype": "float32",
-                  "note": "mono waveform, MUST be at sample_rate Hz"},
+        "inputs": [
+            {"name": "audio", "shape": ["batch", chunk_size], "dtype": "float32",
+             "note": f"mono waveform chunk, {chunk_size} samples @ {args.sample_rate} Hz"},
+            {"name": "cache", "shape": ["batch", cache_size], "dtype": "float32",
+             "note": "streaming state from previous call; zeros on first call"},
+        ],
         "outputs": [
-            {"name": "f0_hz", "shape": ["num_frames"], "dtype": "float32",
-             "note": "fundamental frequency in Hz (convert_to_freq=True)"},
-            {"name": "confidence", "shape": ["num_frames"], "dtype": "float32",
+            {"name": "f0_hz", "shape": ["batch", "frames"], "dtype": "float32",
+             "note": "F0 in Hz, 1 frame per call when chunk_size == hop_samples"},
+            {"name": "confidence", "shape": ["batch", "frames"], "dtype": "float32",
              "note": "voicing confidence in [0, 1]"},
+            {"name": "volume", "shape": ["batch", "frames"], "dtype": "float32",
+             "note": "frame energy"},
+            {"name": "activations", "shape": ["batch", "frames", "bins"], "dtype": "float32",
+             "note": "raw pitch activation logits"},
+            {"name": "cache_out", "shape": ["batch", cache_size], "dtype": "float32",
+             "note": "updated streaming state; feed back as 'cache' on next call"},
         ],
     }
     meta_path = args.output.with_name("pesto_onnx_meta.json")
@@ -199,7 +375,8 @@ def main() -> int:
             return 0
         audio_path = candidates[0]
 
-    return 0 if verify(model, args.output, args.sample_rate, audio_path) else 1
+    return 0 if verify_streaming(model, args.output, args.sample_rate,
+                                 chunk_size, cache_size, audio_path) else 1
 
 
 if __name__ == "__main__":
