@@ -56,6 +56,54 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger("export_pesto_onnx")
 
 ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_STEP_SIZE = 10.0
+DEFAULT_SAMPLE_RATE = 44100
+DEFAULT_MIRROR = 0.8
+DEFAULT_MIRROR_FN = "zeros"
+
+
+def _load_train_config(model_name: str, config_path: Path | None) -> tuple[dict, Path | None]:
+    """Load an explicit config or discover config.json beside a custom checkpoint."""
+    if config_path is None:
+        model_path = Path(model_name)
+        if model_path.is_file():
+            candidate = model_path.parent / "config.json"
+            config_path = candidate if candidate.is_file() else None
+    elif not config_path.is_file():
+        raise FileNotFoundError(f"Training config not found: {config_path}")
+
+    if config_path is None:
+        return {}, None
+
+    with config_path.open() as f:
+        config = json.load(f)
+    log.info("Loaded training config: %s", config_path)
+    return config, config_path
+
+
+def _prefer_cli(cli_value, config: dict, key: str, default):
+    return cli_value if cli_value is not None else config.get(key, default)
+
+
+def _load_confidence_state(model_name: str) -> dict[str, torch.Tensor]:
+    """Load only ConfidenceClassifier weights from a PESTO checkpoint."""
+    checkpoint_path = Path(model_name)
+    if not checkpoint_path.is_file():
+        import pesto
+        checkpoint_path = Path(pesto.__file__).parent / "weights" / f"{model_name}.ckpt"
+    if not checkpoint_path.is_file():
+        raise FileNotFoundError(f"Confidence checkpoint not found: {model_name}")
+
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    prefix = "confidence."
+    confidence_state = {
+        key.removeprefix(prefix): value
+        for key, value in checkpoint["state_dict"].items()
+        if key.startswith(prefix)
+    }
+    if not confidence_state:
+        raise ValueError(f"Checkpoint has no confidence weights: {checkpoint_path}")
+    return confidence_state
 
 
 def _preprocessor_forward_no_complex(self, x, sr=None):
@@ -167,7 +215,8 @@ def build_model(model_name: str,
                 sample_rate: int,
                 max_batch_size: int,
                 mirror: float,
-                mirror_fn: str) -> nn.Module:
+                mirror_fn: str,
+                confidence_model: str | None = None) -> nn.Module:
     log.info("Loading PESTO '%s' (step_size=%.1f ms, sr=%d Hz, streaming, "
              "mirror=%.2f, mirror_fn=%s)",
              model_name, step_size, sample_rate, mirror, mirror_fn)
@@ -179,6 +228,10 @@ def build_model(model_name: str,
         max_batch_size=max_batch_size,
         mirror=mirror,
     )
+    if confidence_model:
+        confidence_state = _load_confidence_state(confidence_model)
+        model.confidence.load_state_dict(confidence_state, strict=True)
+        log.info("Loaded confidence weights from '%s'", confidence_model)
     model.eval()
     model.preprocessor.forward = types.MethodType(_preprocessor_forward_no_complex, model.preprocessor)
     if mirror_fn == "refill":
@@ -305,14 +358,21 @@ def verify_streaming(model: nn.Module,
 def main() -> int:
     parser = argparse.ArgumentParser(description="Export streaming PESTO to ONNX.")
     parser.add_argument("--model-name", default="mir-1k_g7", help="PESTO checkpoint name")
-    parser.add_argument("--step-size", type=float, default=10.0, help="hop size in ms")
-    parser.add_argument("--sample-rate", type=int, default=44100, help="baked-in sample rate")
+    parser.add_argument("--train-config", type=Path, default=None,
+                        help="training config.json; default: discover beside --model-name checkpoint")
+    parser.add_argument("--confidence-model", default="",
+                        help="optional checkpoint name/path providing confidence.* weights; "
+                             "empty keeps the confidence loaded with --model-name")
+    parser.add_argument("--step-size", type=float, default=None,
+                        help="hop size in ms; overrides training config chunk_size")
+    parser.add_argument("--sample-rate", type=int, default=None,
+                        help="baked-in sample rate; overrides training config")
     parser.add_argument("--opset", type=int, default=17, help="ONNX opset version")
-    parser.add_argument("--mirror", type=float, default=0.8,
+    parser.add_argument("--mirror", type=float, default=None,
                         help="fraction of right-edge fake samples (1.0 = zero added latency, "
                              "0.5 = ~44 ms latency / best accuracy). 0.8 is the elbow of the "
                              "latency/accuracy curve on guitar recordings.")
-    parser.add_argument("--mirror-fn", choices=["zeros", "refill"], default="zeros",
+    parser.add_argument("--mirror-fn", choices=["zeros", "refill"], default=None,
                         help="how to fill the right edge fake zone. 'zeros' (default) works "
                              "best on the pretrained checkpoint; 'refill' is intended for "
                              "future realtime-finetuned models (see ROADMAP).")
@@ -323,27 +383,45 @@ def main() -> int:
     parser.add_argument("--no-verify", action="store_true", help="skip numeric verification")
     args = parser.parse_args()
 
-    hop_samples = int(args.step_size * args.sample_rate / 1000 + 0.5)
-    chunk_size = hop_samples  # 1 hop per call = 1 output frame
+    train_config, train_config_path = _load_train_config(args.model_name, args.train_config)
+    sample_rate = int(_prefer_cli(args.sample_rate, train_config, "sample_rate", DEFAULT_SAMPLE_RATE))
+    mirror = float(_prefer_cli(args.mirror, train_config, "mirror", DEFAULT_MIRROR))
+    mirror_fn = str(_prefer_cli(args.mirror_fn, train_config, "mirror_fn", DEFAULT_MIRROR_FN))
 
-    model = build_model(args.model_name, args.step_size, args.sample_rate,
-                        args.max_batch_size, args.mirror, args.mirror_fn)
+    if args.step_size is not None:
+        step_size = args.step_size
+        chunk_size = int(step_size * sample_rate / 1000 + 0.5)
+    elif "chunk_size" in train_config:
+        chunk_size = int(train_config["chunk_size"])
+        step_size = 1000.0 * chunk_size / sample_rate
+    else:
+        step_size = float(train_config.get("step_size_ms", DEFAULT_STEP_SIZE))
+        chunk_size = int(step_size * sample_rate / 1000 + 0.5)
+
+    log.info("Resolved export config: sr=%d, step=%.6f ms, chunk=%d, mirror=%.2f, mirror_fn=%s",
+             sample_rate, step_size, chunk_size, mirror, mirror_fn)
+
+    model = build_model(args.model_name, step_size, sample_rate,
+                        args.max_batch_size, mirror, mirror_fn,
+                        confidence_model=args.confidence_model or None)
     _, cache_size = export_onnx(model, chunk_size, args.opset, args.output)
 
     meta = {
         "model_name": args.model_name,
-        "sample_rate": args.sample_rate,
-        "step_size_ms": args.step_size,
-        "hop_samples": hop_samples,
+        "confidence_model": args.confidence_model or None,
+        "train_config": str(train_config_path) if train_config_path else None,
+        "sample_rate": sample_rate,
+        "step_size_ms": step_size,
+        "hop_samples": chunk_size,
         "chunk_size": chunk_size,
         "cache_size": cache_size,
-        "mirror": args.mirror,
-        "mirror_fn": args.mirror_fn,
+        "mirror": mirror,
+        "mirror_fn": mirror_fn,
         "max_batch_size": args.max_batch_size,
         "opset": args.opset,
         "inputs": [
             {"name": "audio", "shape": ["batch", chunk_size], "dtype": "float32",
-             "note": f"mono waveform chunk, {chunk_size} samples @ {args.sample_rate} Hz"},
+             "note": f"mono waveform chunk, {chunk_size} samples @ {sample_rate} Hz"},
             {"name": "cache", "shape": ["batch", cache_size], "dtype": "float32",
              "note": "streaming state from previous call; zeros on first call"},
         ],
@@ -375,7 +453,7 @@ def main() -> int:
             return 0
         audio_path = candidates[0]
 
-    return 0 if verify_streaming(model, args.output, args.sample_rate,
+    return 0 if verify_streaming(model, args.output, sample_rate,
                                  chunk_size, cache_size, audio_path) else 1
 
 

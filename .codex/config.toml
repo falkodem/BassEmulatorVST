@@ -1,0 +1,5 @@
+# Project-local Codex configuration for BassEmulatorVST.
+
+[[hooks.PostToolUse]]
+command = "bash .codex/hooks/render_research_html.sh"
+timeout = 120000

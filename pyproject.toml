@@ -27,6 +27,7 @@ tqdm        = ">=4.0"
 tensorboard = ">=2.13"
 jupyter = "^1.1.1"
 pandas = "^3.0.3"
+pytorch-lightning = "^2.6.5"
 
 [tool.poetry.group.docs.dependencies]
 markdown    = ">=3.5"
