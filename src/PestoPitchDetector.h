@@ -11,7 +11,7 @@
  * PESTO pitch detector обёртка поверх ANIRA + ONNX Runtime (streaming-режим).
  *
  * Модель `models/pesto.onnx` экспортируется скриптом `ml/utils/export_pesto_onnx.py`
- * через `load_model(streaming=True, mirror=0.8)` + обёртка `StatelessPESTO`.
+ * через `load_model(streaming=True, mirror=1.0)` + обёртка `StatelessPESTO`.
  * См. ROADMAP.md → Шаг 2.5 и backlog «finetune PESTO под realtime-режим».
  *
  * Ключевые отличия от предыдущей offline-реализации:
@@ -40,11 +40,11 @@
  *   ADC + analog               ~  2 мс
  *   DAW round-trip (in+out)    ~ 12 мс
  *   PESTO chunk accumulation   ~  5 мс (avg, max 10)
- *   PESTO mirror algorithmic   ~ 18 мс  (фрейм центрирован 18 мс назад)
+ *   PESTO mirror algorithmic    0 мс
  *   PESTO compute + worker     ~  3 мс
  *   DAC + analog               ~  3 мс
  *   ─────────────────────────────────
- *   Total                      ~ 43 мс
+ *   Total                      ~ 25 мс
  *
  * API мимикрирует YinPitchDetector: `process(buf, n)` возвращает F0 (Гц) или 0.0f
  * пока валидного питча ещё нет (initial buffering или unvoiced).
@@ -55,8 +55,8 @@ public:
     // ── параметры модели (должны совпадать с pesto.onnx + pesto_onnx_meta.json) ──
     static constexpr int          kSampleRate        = 44100;
     static constexpr int          kHopSamples        = 441;    // 10 мс — chunk на вызов
-    static constexpr int          kCacheSize         = 4651;   // mirror=0.8: 8192 - 441 - 3100
-    static constexpr int          kMirrorLagSamples  = 775;    // (1-0.8) * (8192-441)/2
+    static constexpr int          kCacheSize         = 3876;   // mirror=1.0: (8192 - 441) / 2
+    static constexpr int          kMirrorLagSamples  = 0;      // mirror=1.0: zero algorithmic look-back
     static constexpr int          kActivationsBins   = 384;    // output_dim Resnet1d
     static constexpr int          kFramesPerCall     = 1;      // один фрейм на inference
     static constexpr float        kVoicedThreshold   = 0.5f;   // PESTO confidence порог

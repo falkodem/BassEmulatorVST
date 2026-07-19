@@ -16,9 +16,12 @@ private:
 
     juce::Slider cutoffSlider, resonanceSlider, attackSlider, releaseSlider, dryWetSlider;
     juce::Label  cutoffLabel,  resonanceLabel,  attackLabel,  releaseLabel,  dryWetLabel;
+    juce::ComboBox waveformBox;
+    juce::Label    waveformLabel;
 
     juce::AudioProcessorValueTreeState::SliderAttachment
         cutoffAttachment, resonanceAttachment, attackAttachment, releaseAttachment, dryWetAttachment;
+    juce::AudioProcessorValueTreeState::ComboBoxAttachment waveformAttachment;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(BassEmulatorEditor)
 };

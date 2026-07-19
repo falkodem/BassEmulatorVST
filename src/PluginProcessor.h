@@ -35,7 +35,8 @@ public:
     juce::AudioProcessorValueTreeState apvts;
 
 private:
-    juce::dsp::Oscillator<float>   osc;
+    juce::dsp::Oscillator<float>   sawOsc;
+    juce::dsp::Oscillator<float>   sineOsc;
     juce::dsp::LadderFilter<float> filter;
 
     PestoPitchDetector pesto;

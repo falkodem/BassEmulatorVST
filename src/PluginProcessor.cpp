@@ -52,6 +52,23 @@ static FARPROC WINAPI bundledDllLoadHook (unsigned dliNotify, PDelayLoadInfo pdl
     std::wstring fullPath (dir);
     fullPath += wname;
 
+    // Dependencies of a DLL loaded by absolute path are still resolved using
+    // the host process search path. Reaper does not have ANIRA's backend DLLs
+    // beside reaper.exe, so preload them explicitly from the VST3 bundle.
+    if (_stricmp (pdli->szDll, "anira.dll") == 0)
+    {
+        const auto loadBundled = [dir] (const wchar_t* name)
+        {
+            std::wstring dependencyPath (dir);
+            dependencyPath += name;
+            return LoadLibraryW (dependencyPath.c_str());
+        };
+
+        loadBundled (L"onnxruntime_providers_shared.dll");
+        loadBundled (L"onnxruntime.dll");
+        loadBundled (L"libLiteRt.dll");
+    }
+
     HMODULE h = LoadLibraryW (fullPath.c_str());
     return reinterpret_cast<FARPROC> (h); // nullptr = fallback на стандартный поиск
 }
@@ -82,6 +99,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout BassEmulatorProcessor::creat
     params.push_back(std::make_unique<juce::AudioParameterFloat>("envAttack",       "Env Attack",       1.0f,   50.0f,   10.0f));
     params.push_back(std::make_unique<juce::AudioParameterFloat>("envRelease",      "Env Release",      10.0f,  500.0f,  100.0f));
     params.push_back(std::make_unique<juce::AudioParameterFloat>("dryWet",          "Dry/Wet",          0.0f,   1.0f,    1.0f));
+    params.push_back(std::make_unique<juce::AudioParameterChoice>("waveform", "Waveform",
+                                                                  juce::StringArray { "Saw", "Sine" }, 0));
 
     return { params.begin(), params.end() };
 }
@@ -93,10 +112,14 @@ void BassEmulatorProcessor::prepareToPlay(double sampleRate, int samplesPerBlock
     spec.maximumBlockSize = static_cast<juce::uint32>(samplesPerBlock);
     spec.numChannels      = 1;
 
-    // Sawtooth: phase in [-pi, pi] mapped linearly to [-1, 1]
-    osc.initialise([](float x) { return x / juce::MathConstants<float>::pi; }, 128);
-    osc.prepare(spec);
-    osc.setFrequency(currentPitch);
+    // Both waveforms use lookup tables prepared off the audio thread. The
+    // active oscillator is selected once per processBlock.
+    sawOsc.initialise([](float x) { return x / juce::MathConstants<float>::pi; }, 128);
+    sineOsc.initialise([](float x) { return std::sin(x); }, 128);
+    sawOsc.prepare(spec);
+    sineOsc.prepare(spec);
+    sawOsc.setFrequency(currentPitch);
+    sineOsc.setFrequency(currentPitch);
 
     filter.prepare(spec);
     filter.setMode(juce::dsp::LadderFilterMode::LPF12);
@@ -128,7 +151,8 @@ void BassEmulatorProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
     if (detectedPitch > 0.0f)
     {
         currentPitch = detectedPitch / 2.0f;
-        osc.setFrequency(currentPitch);
+        sawOsc.setFrequency(currentPitch);
+        sineOsc.setFrequency(currentPitch);
         pitchIsValid = true;
     }
 
@@ -148,7 +172,11 @@ void BassEmulatorProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
     float* bassChannels[] = { bassBuffer.getWritePointer(0) };
     juce::dsp::AudioBlock<float>             bassBlock(bassChannels, 1, (size_t)numSamples);
     juce::dsp::ProcessContextReplacing<float> oscCtx(bassBlock);
-    osc.process(oscCtx);
+    const bool useSine = apvts.getRawParameterValue("waveform")->load() >= 0.5f;
+    if (useSine)
+        sineOsc.process(oscCtx);
+    else
+        sawOsc.process(oscCtx);
 
     // Shape amplitude with envelope (driven by input signal level)
     auto* bassData = bassBuffer.getWritePointer(0);

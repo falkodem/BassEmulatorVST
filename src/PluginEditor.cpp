@@ -6,7 +6,8 @@ BassEmulatorEditor::BassEmulatorEditor(BassEmulatorProcessor& p)
       resonanceAttachment (p.apvts, "filterResonance", resonanceSlider),
       attackAttachment    (p.apvts, "envAttack",       attackSlider),
       releaseAttachment   (p.apvts, "envRelease",      releaseSlider),
-      dryWetAttachment    (p.apvts, "dryWet",          dryWetSlider)
+      dryWetAttachment    (p.apvts, "dryWet",          dryWetSlider),
+      waveformAttachment  (p.apvts, "waveform",        waveformBox)
 {
     auto setupSlider = [this](juce::Slider& s) {
         s.setSliderStyle(juce::Slider::RotaryVerticalDrag);
@@ -29,8 +30,14 @@ BassEmulatorEditor::BassEmulatorEditor(BassEmulatorProcessor& p)
     setupLabel(attackLabel,    "Attack");
     setupLabel(releaseLabel,   "Release");
     setupLabel(dryWetLabel,    "Dry/Wet");
+    setupLabel(waveformLabel,   "Waveform");
 
-    setSize(500, 200);
+    waveformBox.addItem("Saw",  1);
+    waveformBox.addItem("Sine", 2);
+    waveformBox.setJustificationType(juce::Justification::centred);
+    addAndMakeVisible(waveformBox);
+
+    setSize(600, 200);
 }
 
 BassEmulatorEditor::~BassEmulatorEditor() {}
@@ -43,7 +50,7 @@ void BassEmulatorEditor::paint(juce::Graphics& g)
 void BassEmulatorEditor::resized()
 {
     auto area = getLocalBounds().reduced(10);
-    const int sliderWidth = area.getWidth() / 5;
+    const int controlWidth = area.getWidth() / 6;
     const int labelHeight = 20;
 
     juce::Label*  labels[]  = { &cutoffLabel, &resonanceLabel, &attackLabel, &releaseLabel, &dryWetLabel };
@@ -51,8 +58,12 @@ void BassEmulatorEditor::resized()
 
     for (int i = 0; i < 5; ++i)
     {
-        auto col = area.removeFromLeft(sliderWidth);
+        auto col = area.removeFromLeft(controlWidth);
         labels[i]->setBounds(col.removeFromTop(labelHeight));
         sliders[i]->setBounds(col);
     }
+
+    auto waveformCol = area.removeFromLeft(controlWidth);
+    waveformLabel.setBounds(waveformCol.removeFromTop(labelHeight));
+    waveformBox.setBounds(waveformCol.removeFromTop(28).reduced(5, 2));
 }
