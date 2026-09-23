@@ -123,6 +123,7 @@ _(DSP-baseline, shipped; будет заменён PESTO + ML-тембр в Phas
 | envAttack        | Env Attack       | 1–50 мс         | 10     |
 | envRelease       | Env Release      | 10–500 мс       | 100    |
 | dryWet           | Dry/Wet          | 0–1             | 1.0    |
+| waveform         | Waveform         | Saw / Sine      | Saw    |
 
 ### Пайплайн processBlock
 
@@ -134,7 +135,7 @@ _(DSP-baseline, shipped; будет заменён PESTO + ML-тембр в Phas
   │
   │   (если pitchIsValid == false → dry pass-through)
   │
-  ├─→ Oscillator (sawtooth, currentPitch)
+  ├─→ Oscillator (selectable sawtooth/sine, currentPitch)
   │       × EnvelopeFollower (driven by input amplitude)
   │       → LadderFilter LPF12 (cutoff, resonance)
   │
