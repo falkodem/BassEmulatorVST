@@ -12,13 +12,19 @@ from pathlib import Path
 from typing import Sequence
 
 
+def _default_wav_paths() -> list[str]:
+    return [
+        "/media/falkodem/VolumeD/Music/Projects/dataset/19-PESTO_0-260606_1408.wav",
+        "/media/falkodem/VolumeD/Music/Projects/dataset/20-PESTO_1-260607_1530.wav",
+        "/media/falkodem/VolumeD/Music/Projects/dataset/21-PESTO_2-260726_2105.wav",
+        "/media/falkodem/VolumeD/Music/Projects/dataset/22-PESTO_3-260726_2117.wav",
+    ]
+
+
 @dataclass
 class TrainConfig:
     # data
-    wav_paths: Sequence[str] = field(default_factory=lambda: [
-        "/media/falkodem/VolumeD/Music/Projects/dataset/19-PESTO_0-260606_1408.wav",
-        "/media/falkodem/VolumeD/Music/Projects/dataset/20-PESTO_1-260607_1530.wav",
-    ])
+    wav_paths: Sequence[str] = field(default_factory=_default_wav_paths)
     sample_rate: int = 44100
     chunk_size: int = 441            # = step_size 10ms @ 44.1k
     random_offset: bool = True
@@ -80,3 +86,78 @@ class TrainConfig:
 
     def __post_init__(self):
         self.wav_paths = [str(Path(p).expanduser()) for p in self.wav_paths]
+
+
+@dataclass
+class DistillConfig:
+    """Configuration shared by teacher-label generation and distillation."""
+
+    # data and fixed split
+    wav_paths: Sequence[str] = field(default_factory=_default_wav_paths)
+    validation_wav: str = (
+        "/media/falkodem/VolumeD/Music/Projects/dataset/20-PESTO_1-260607_1530.wav"
+    )
+    validation_start_fraction: float = 0.5
+    teacher_labels_dir: str = "data/pesto_teacher/mir-1k_g7"
+
+    # teacher/student
+    teacher_model: str = "mir-1k_g7"
+    student_checkpoint: str = (
+        "runs/finetune_pesto/20260706_110636/finetuned-20260706_110636.ckpt"
+    )
+    mode: str = "confidence"  # "confidence" or "pitch"
+
+    # frame grid and streaming frontend
+    sample_rate: int = 44100
+    chunk_size: int = 441
+    random_offset: bool = False
+    mirror: float = 1.0
+    mirror_fn: str = "refill"
+    harmonics: Sequence[float] = (1,)
+    fmin: float = 27.5
+    bins_per_semitone: int = 3
+    n_bins: int = 251
+    center_bins: bool = True
+    gamma: float = 7.0
+
+    # teacher generation
+    teacher_frames_per_block: int = 4096
+    teacher_device: str = "auto"
+
+    # training
+    batch_size: int = 512
+    precompute_batch: int = 256
+    validation_precompute_batch: int = 64
+    num_workers: int = 0
+    confidence_lr: float = 1e-4
+    pitch_lr: float = 1e-5
+    weight_decay: float = 0.0
+    epochs: int = 20
+    grad_clip: float = 3.0
+    teacher_confidence_power: float = 1.0
+
+    # checkpoint/logging
+    output_dir: str = "runs/distill_pesto"
+    run_name: str = ""
+    resume_from: str | None = None
+    log_every_n_steps: int = 10
+
+    # device
+    accelerator: str = "auto"
+    devices: int = 1
+    precision: str = "32-true"
+
+    # smoke-test limiter; None uses complete ranges
+    max_minutes: float | None = None
+
+    def __post_init__(self):
+        self.wav_paths = [str(Path(p).expanduser()) for p in self.wav_paths]
+        self.validation_wav = str(Path(self.validation_wav).expanduser())
+        self.teacher_labels_dir = str(Path(self.teacher_labels_dir).expanduser())
+        self.student_checkpoint = str(Path(self.student_checkpoint).expanduser())
+        if self.mode not in {"confidence", "pitch"}:
+            raise ValueError(f"Unsupported distillation mode: {self.mode}")
+        if not 0.0 < self.validation_start_fraction < 1.0:
+            raise ValueError("validation_start_fraction must be between 0 and 1")
+        if self.random_offset:
+            raise ValueError("Distillation labels require random_offset=False")
