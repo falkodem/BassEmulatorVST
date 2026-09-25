@@ -23,6 +23,7 @@ guitar ────────────────────────�
 Явно разделяем задачи: питч решает детектор, нейросеть занимается только тембром.
 Проще обучать, быстрее сходится, атака контролируется детерминированно.
 Pitch detector — **PESTO** (pretrained, ONNX, < 5 мс; см. [RESEARCH.md §8](RESEARCH.md)).
+Порядок работ: сначала добиться устойчивого F₀ и корректного voiced/unvoiced в потоковом PESTO на наших гитарных записях и в Reaper. Только после проверки качества детектора переходить к улучшению синтеза баса. Качество тембра не компенсирует ошибочную или запаздывающую ноту.
 
 ### Подход B: End-to-end (side-experiment)
 
@@ -43,8 +44,9 @@ guitar ──→ [Neural Network] ──→ bass
 - [x] Phase 1: YIN + onset + envelope + sawtooth + LadderFilter — реализован, деплой в Reaper работает
 - [x] Phase 2 exploration: WaveConvNet v0 (stateless 1D CNN) — пайплайн и датасет проверены, не финальная архитектура
 - [x] Phase 2A: PESTO evaluation — завершено; PESTO выбран как pitch detector
-- [~] Phase 2A: интеграция PESTO в плагин (streaming-режим, mirror=0.8 zeros — собран на Linux, ждёт сборки/проверки на Windows)
-- [ ] Phase 2A: ML-синтез тембра
+- [x] Phase 2A: потоковый PESTO через ANIRA/ONNX интегрирован в плагин; текущий контракт модели — 44,1 кГц, chunk 441, `mirror=1.0/refill`, cache 3876
+- [~] Phase 2A: качество PESTO — реализованы fine-tune, distillation и оценочные скрипты; выбор модели и проверка в Reaper ещё открыты
+- [ ] Phase 2A: ML-синтез тембра — после принятия качества PESTO
 - [ ] Phase 2B: end-to-end TCN/GRU с состоянием (side-experiment)
 - [ ] Phase 3: RAVE / DDSP offline постобработка
 
@@ -69,7 +71,7 @@ guitar ──→ [Neural Network] ──→ bass
 
 YIN даёт ~15% false positives (питч в тишине/затухании). PESTO почти не галлюцинирует; пропуски (~8% кадров) — тихие хвосты нот, не игровые. Расхождение YIN↔PESTO: медиана 11 центов (согласие хорошее), mean 299 центов из-за редких octave errors PESTO; 5.8% кадров расходятся >50 центов. Аудиальная оценка подтверждает: у YIN много слышимых ложных нот, у PESTO ~1 заметная октавная ошибка в минуту.
 
-Решение: **PESTO выбран как pitch detector проекта.** YIN остаётся как baseline для регрессионных сравнений. `voiced_threshold` PESTO не требует тюнинга на текущем датасете. Идея ground-truth-метрики «% попадания в ноту из имени файла» отклонена: записи содержат бенды, номинальная нота из имени файла ненадёжна как ground truth.
+Решение: **PESTO выбран как pitch detector проекта.** YIN остаётся как baseline для регрессионных сравнений. Вывод о достаточности прежнего `voiced_threshold` относится к этой оценке и не заменяет проверки новых потоковых моделей. Идея ground-truth-метрики «% попадания в ноту из имени файла» отклонена: записи содержат бенды, номинальная нота из имени файла ненадёжна как ground truth.
 
 Референс: [RESEARCH.md §8](RESEARCH.md) — сравнение алгоритмов, PESTO ONNX streaming export.
 
@@ -81,20 +83,30 @@ YIN даёт ~15% false positives (питч в тишине/затухании).
 
 Первая итерация интеграции (offline-PESTO с overlapping windows) собрана и работала в Reaper, но качество F0 оказалось спорным — обнаружили что мы по сути запускаем offline-модель с reflect-pad на каждом 10-мс хопе, что генерирует артефакты. Переход на streaming-режим — Шаг 2.5.
 
-### Шаг 2.5 — Правильный инференс PESTO по статье (ожидает сборки на Windows)
+### Шаг 2.5 — Потоковый PESTO в плагине (интеграция выполнена)
 
-- [x] Изучить streaming-режим PESTO: `CachedConv1d` хранит последние `kernel_width - hop_length` сэмплов реального прошлого как левый паддинг свёртки (заменяет offline reflect-pad), `mirror_fn` (zeros/refill/reflection) заполняет правый край фейком
-- [x] Перейти на streaming-экспорт PESTO в `ml/utils/export_pesto_onnx.py`: `load_model(streaming=True, max_batch_size=1, mirror=0.8)`, обёртка `StatelessPESTO` выносит cache (`CachedPadding1d.pad`) как явный input/output ONNX-тензор. Финальные параметры: `mirror=0.8`, `mirror_fn=zeros`, `cache_size=4651`, `chunk_size=441`
-- [x] Замерить trade-off mirror vs точность на гитарном WAV (`runs/pitch_eval/streaming_compare_*/`): mirror=1.0 даёт **16% octave errors**, **mirror=0.8 — 2%** за +18 мс алгоритмической задержки, mirror=0.5 — 1.2% за +44 мс. Выбран mirror=0.8 как elbow кривой. Mirror_fn=refill оказался ХУЖЕ дефолтного zeros на всех значениях mirror (видимо потому что pretrained checkpoint обучен на offline-условиях с reflect-pad; на дообученной realtime-модели refill должен быть лучше — см. backlog "finetune PESTO")
-- [x] Переписать `src/PestoPitchDetector.h` под streaming: убрал `kWindowSamples=11025` (overlapping windows), теперь `kHopSamples=441` (chunk на вызов) и `kCacheSize=4651`. Multi-input ANIRA config (audio streamable 441 + cache non-streamable 4651), 5 outputs (f0/conf/vol/acts/cache_out, все non-streamable). Кастомный `PestoProcessor::pre_process` подкладывает cache из member-vector, `post_process` читает `cache_out` обратно. F0 читается из единственного фрейма (kFramesPerCall=1) вместо kFramesPerWindow-1
-- [ ] Собрать VST3 на Windows, проверить в Reaper аудиально (нет ли застываний питча, корректность работы реверса нот, общее качество vs предыдущая offline-итерация)
-- [ ] `setLatencySamples` теперь включает `kMirrorLagSamples=775` (18 мс mirror algorithmic + handler latency) — проверить PDC в Reaper
+- [x] Реализовать ONNX-экспорт с явным входом и выходом cache в `ml/pesto/export_onnx.py` и потоковый вызов модели через ANIRA в `src/PestoPitchDetector.h`.
+- [x] Проверить варианты `mirror` и `mirror_fn` на раннем pretrained checkpoint. Исторические замеры для `mirror=0.8/zeros` показывали меньше октавных ошибок ценой дополнительной задержки; они не описывают качество нынешней дообученной модели.
+- [x] Перейти к контракту текущего детектора: 44,1 кГц, 441 сэмпл на вызов, `mirror=1.0/refill`, cache 3876, один F₀/confidence на вызов. Эти размеры совпадают с метаданными fine-tuned и confidence-distilled моделей в `models/`; выбранного файла `models/pesto.onnx` пока нет.
+- [x] Вызывать `setLatencySamples(pesto.getLatencySamples())` в `prepareToPlay`. При `mirror=1.0` дополнительный `kMirrorLagSamples` равен нулю.
 
-Бюджет задержки «струна → ухо» с mirror=0.8 и Reaper buffer 256 сэмплов: ~45 мс (DAW round-trip ~12 + PESTO ~28 + analog ~5). Подробнее в комментариях `src/PestoPitchDetector.h`.
+Работоспособность потокового инференса сама по себе не означает, что питч достаточно хорош для записи. Выбор модели, поведение на атаках и нотных переходах, а также задержку/PDC в Reaper проверяем в следующем шаге. Проект Reaper должен работать на 44,1 кГц; см. [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
 
-### Шаг 3 — ML-синтез тембра (v2, conditioned)
+### Шаг 2.6 — Добиться устойчивого питча (текущий приоритет)
 
-- [ ] Подготовить тройки `(guitar, synth_bass, real_bass)` — `synth_bass` генерируется оффлайн через YIN + осциллятор из VST-кода
+- [x] Реализовать потоковое fine-tune PESTO, генерацию offline teacher-меток, distillation для confidence и pitch и сравнение ONNX-моделей. Код находится в `ml/pesto/finetune/` и `ml/pitch_eval/`; confidence-модель экспортирована в `models/20260809_155522_confidence/`.
+- [ ] Зафиксировать единый протокол оценки и baseline. Сравнивать модели на одинаковых WAV, разбиении train/validation и параметрах потокового препроцессинга; отдельно проверять атаки, смену ноты, низкую E2, затухания и шум. Номинальная нота из имени файла не считается точным F₀ для бендов.
+- [ ] Оценить fine-tuned и confidence-distilled версии против baseline: voiced recall, ложные voiced-кадры, октавные ошибки, пропуски, скачки F₀ и время стабилизации после атаки. Проверить порог confidence и сохранить результаты в `runs/pitch_eval/`.
+- [ ] Если confidence-distillation улучшает гейт, проверить pitch-distillation и экспортировать итоговую ONNX-модель. При отсутствии улучшения вернуться к данным, teacher-меткам или компромиссу `mirror`/задержки; не считать сам факт обучения успехом.
+- [ ] Выбрать модель для плагина, разместить её как `models/pesto.onnx` вместе с метаданными и проверить совпадение sample rate, chunk, cache и порядка входов/выходов с `PestoPitchDetector.h`.
+- [ ] Собрать VST3 на Windows и проверить в Reaper на 44,1 кГц: слуховую точность атак и переходов, отсутствие застывшего старого питча, задержку и PDC. Отладочный файловый вывод из аудиопотока убрать перед рабочим использованием.
+
+**Условие перехода к Шагу 3:** выбранная модель не ухудшает ключевые метрики относительно согласованного baseline, а в Reaper не даёт мешающих записи ошибок питча и voiced-гейта. Результаты измерений, прослушивания и выбранный ONNX-файл должны быть зафиксированы; точные численные пороги задаются по baseline, а не предположительно.
+
+### Шаг 3 — Синтез баса после принятия качества питча (v2, conditioned)
+
+- [ ] Сначала зафиксировать качество текущего DSP-синтеза на принятом PESTO: атака, огибающая, фильтр и переключение нот; определить, какие недостатки относятся именно к тембру.
+- [ ] Подготовить тройки `(guitar, synth_bass, real_bass)` — `synth_bass` генерируется оффлайн с принятой моделью PESTO и осциллятором из VST-кода.
 - [ ] Обучить модель на паре `(guitar, synth_bass)` → `real_bass`: задача — только тембральная коррекция, субгармоника уже в `synth_bass`
 - [ ] Добавить `envelope_loss` к текущему MRSTFT (см. [RESEARCH.md §10](RESEARCH.md))
 - [ ] Оценить результат субъективно, сравнить с Phase 1 baseline
@@ -107,10 +119,10 @@ YIN даёт ~15% false positives (питч в тишине/затухании).
 ## Backlog / отложенное
 
 - ~~**Streaming PESTO (оптимизация инференса)**~~ — выполнено в Шаге 2.5. Streaming CQT через `CachedConv1d` решает задачу полностью: у `mir-1k_g7` единственная `CachedConv1d` живёт в CQT (1 гармоника), а энкодер `Resnet1d` обрабатывает каждый CQT-кадр **независимо** (нет временной свёртки → состояние не нужно), так что отдельно стримить энкодер не пришлось.
-- **finetune PESTO под realtime-режим** — запланировано после набора большего датасета. Текущий плагин использует pretrained `mir-1k_g7`, который обучен в offline-режиме (whole-file CQT с reflect-pad с обеих сторон), а мы инференсим в streaming с `mirror=0.8, mirror_fn=zeros` (правая половина CQT-окна = фейк zeros). Замеры (`runs/pitch_eval/streaming_compare_*/`) показывают деградацию **~2% octave errors** vs offline на гитарных записях. При fine-tuning нужно: (1) собирать training данные в **streaming-режиме** с тем же `mirror` и `mirror_fn`, что используются в плагине (сейчас 0.8 / zeros); (2) попробовать `mirror_fn=refill` — наши замеры на zero-shot модели показали что refill ХУЖЕ zeros на всех mirror (30% vs 16% при mirror=1.0; 2.8% vs 2.0% при mirror=0.8), но на дообученной модели refill теоретически должен быть лучше для квазипериодических сигналов как утверждают авторы статьи; (3) использовать тот же sample_rate (44100) и chunk_size (441). В `ml/utils/export_pesto_onnx.py` уже есть флаг `--mirror-fn refill` для будущего использования. Без realtime-aware fine-tune'а refill включать не имеет смысла. Не блокирует Шаги 2–3. (см. [RESEARCH.md §8](RESEARCH.md))
+- **Расширение PESTO после базовой оценки** — temporal loss, аугментация, новые данные и другие параметры `mirror` рассматриваются только после сравнения текущих моделей по протоколу Шага 2.6. План экспериментов — `ml/pesto/IMPROVING_PESTO.md`, журнал — `ml/pesto/INPROVING_PESTO_LOG.md`.
 - **TCN/GRU end-to-end (v3)** — рекуррентная модель с hidden state, решает фазовую когерентность субгармоники без явного pitch. Требует больше парных данных. (см. [RESEARCH.md §7, §9](RESEARCH.md))
 - **RAVE / DDSP offline (v4, Phase 3)** — VAE для высококачественной постобработки без ограничений по латентности. Работает с непарными данными через WaveTransfer / Sony Diffusion Bridges. (см. [RESEARCH.md §7](RESEARCH.md))
-- ~~**setLatencySamples()**~~ — выполнено: `PluginProcessor::prepareToPlay` дёргает `setLatencySamples(pesto.getLatencySamples())`. После Шага 2.5 latency включает `kMirrorLagSamples=775` (mirror algorithmic) + ANIRA handler latency. Проверка PDC в Reaper — в чек-листе Шага 2.5.
+- ~~**setLatencySamples()**~~ — выполнено: `PluginProcessor::prepareToPlay` вызывает `setLatencySamples(pesto.getLatencySamples())`. В текущем варианте `mirror=1.0` дополнительный `kMirrorLagSamples=0`; проверка PDC в Reaper остаётся в Шаге 2.6.
 - **PolyBLEP осциллятор** — текущий sawtooth даёт aliasing при F₀/2 > 500 Гц. Некритично до перехода на ML-синтез. (см. [RESEARCH.md §5](RESEARCH.md))
 
 ---
@@ -122,5 +134,5 @@ YIN даёт ~15% false positives (питч в тишине/затухании).
 3. Достаточно ли текущего объёма датасета (`data/v0/`) для v2 conditioned ML, или нужен pre-train на Slakh2100?
 4. Какой inference engine использовать для ML-тембра в плагине: ANIRA + LibTorch или ANIRA + ONNX? (зависит от финальной архитектуры)
 5. Как оценивать качество тембра объективно — метрика "звучит как бас"? MRSTFT достаточно или нужен perceptual/adversarial loss?
-6. Когда onset срабатывает на новой ноте, а PESTO ещё не обновил F0 — нужен ли быстрый fade-out при onset для маскировки? (актуальнее после Шага 2.5: mirror=0.8 даёт +18 мс алгоритмического лага F0 относительно реального аудио → onset реально опережает обновление питча)
-7. Стоит ли вынести `mirror` в настройку плагина (multi-model bundle с Low/Balanced/Quality пресетами, +32 МБ к VST3) или оставить фиксированным? Пока зафиксирован mirror=0.8.
+6. Как сбрасывать или маскировать старый F₀ при атаке следующей ноты и потере confidence, чтобы не слышать застывший питч? Решить по измерениям и прослушиванию в Шаге 2.6.
+7. Даёт ли другой `mirror` достаточный выигрыш качества, чтобы оправдать дополнительную задержку? Текущий вариант использует `mirror=1.0/refill`; решение о пресетах отложено до сравнения моделей.
