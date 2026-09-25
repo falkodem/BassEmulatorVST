@@ -73,7 +73,7 @@ if (NOT EXISTS "${PESTO_ONNX_PATH}")
     message(FATAL_ERROR
         "models/pesto.onnx не найден. Сначала выпусти модель:\n"
         "  source venv/bin/activate\n"
-        "  poetry run python ml/utils/export_pesto_onnx.py")
+        "  poetry run python ml/pesto/export_onnx.py")
 endif()
 juce_add_binary_data(PestoModelData
     HEADER_NAME "PestoModelData.h"

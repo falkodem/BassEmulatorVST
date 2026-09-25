@@ -1,5 +1,10 @@
 # Project-local Codex configuration for BassEmulatorVST.
 
 [[hooks.PostToolUse]]
-command = "bash .codex/hooks/render_research_html.sh"
-timeout = 120000
+matcher = "^(apply_patch|Edit|Write)$"
+
+[[hooks.PostToolUse.hooks]]
+type = "command"
+command = 'bash "$(git rev-parse --show-toplevel)/.codex/hooks/render_research_html.sh"'
+timeout = 120
+statusMessage = "Обновление RESEARCH.html"

@@ -1,37 +1,40 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Codex hook: re-render RESEARCH.html after RESEARCH.md edits.
-# The hook receives event JSON on stdin. If the event shape changes, fall back
-# to a no-op rather than blocking the agent.
+# Codex передаёт событие PostToolUse в JSON через stdin.
+payload="$(cat)"
+changed="$(printf '%s' "$payload" | python3 -c '
+import json
+import re
+import sys
 
-payload="$(cat || true)"
+try:
+    event = json.load(sys.stdin)
+except (json.JSONDecodeError, ValueError):
+    raise SystemExit(0)
 
-if command -v jq >/dev/null 2>&1; then
-  file_path="$(
-    printf '%s' "$payload" | jq -r '
-      .tool_input.file_path //
-      .tool_input.path //
-      .input.file_path //
-      .input.path //
-      .file_path //
-      ""
-    ' 2>/dev/null || true
-  )"
-else
-  file_path=""
-fi
+tool_input = event.get("tool_input") or {}
+path = str(tool_input.get("file_path") or tool_input.get("path") or "")
+patch = str(tool_input.get("command") or "")
+if path.replace("\\", "/").split("/")[-1] == "RESEARCH.md" or re.search(
+    r"(?m)^\*\*\* (?:Add|Update) File: (?:.*/)?RESEARCH\.md\s*$", patch
+):
+    print("yes")
+')"
 
-case "$file_path" in
-  *RESEARCH.md) ;;
-  *) exit 0 ;;
-esac
+[[ "$changed" == "yes" ]] || exit 0
 
-cd /home/falkodem/Documents/Projects/BassEmulatorVST
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
 
-if [ -f venv/bin/activate ]; then
+if [[ -f venv/bin/activate ]]; then
   # shellcheck disable=SC1091
   source venv/bin/activate
+fi
+
+if ! python3 -c 'import markdown, pygments' >/dev/null 2>&1; then
+  echo "RESEARCH.html не обновлён: текущему Python нужны markdown и pygments (docs-зависимости в pyproject.toml)." >&2
+  exit 1
 fi
 
 python3 scripts/render_docs.py

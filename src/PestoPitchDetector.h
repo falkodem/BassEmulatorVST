@@ -10,7 +10,7 @@
 /**
  * PESTO pitch detector обёртка поверх ANIRA + ONNX Runtime (streaming-режим).
  *
- * Модель `models/pesto.onnx` экспортируется скриптом `ml/utils/export_pesto_onnx.py`
+ * Модель `models/pesto.onnx` экспортируется скриптом `ml/pesto/export_onnx.py`
  * через `load_model(streaming=True, mirror=1.0)` + обёртка `StatelessPESTO`.
  * См. ROADMAP.md → Шаг 2.5 и backlog «finetune PESTO под realtime-режим».
  *

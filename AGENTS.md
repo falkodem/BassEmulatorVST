@@ -1,91 +1,275 @@
-# BassEmulatorVST Agent Guide
+# Поведенческие принципы
 
-## Project Context
+### Думай, прежде чем писать код
 
-BassEmulatorVST is a JUCE VST3 plugin for real-time monophonic guitar-to-bass conversion.
-The target workflow is recording bass parts from a guitar in Reaper while avoiding inaccurate
-intonation at note attacks.
+**Не предполагай. Не скрывай непонимание. Озвучивай компромиссы.**
 
-Current focus: Phase 2A, integrating PESTO pitch detection into the plugin through ANIRA and
-ONNX Runtime. Phase 1 DSP remains a baseline: onset detection, YIN, envelope following,
-sawtooth oscillator, LadderFilter, and APVTS parameters.
+Перед реализацией:
 
-Guitar is detected in the E2-E4 range. Bass synthesis uses `F0(guitar) / 2`, producing E1-E3.
+- Явно проговаривай свои допущения. Если не уверен — спрашивай.
+- Если возможны несколько трактовок — представь их, а не выбирай молча.
+- Если есть более простой подход — скажи об этом. Возражай, когда это обоснованно.
+- Если что-то неясно — остановись. Назови, что именно путает. Спроси.
 
-## Read First
+### Найди правильный уровень решения
 
-- `CLAUDE.md` is the detailed project memory and remains authoritative for architecture,
-  build commands, ML commands, and current status.
-- `ROADMAP.md` owns phase planning and backlog.
-- `RESEARCH.md` owns research notes; it renders to `RESEARCH.html`.
-- `REVIEW.md` is a historical review of `RESEARCH.md`; some findings may already be applied.
+**Минимизируй сложность системы, а не только изменяемого модуля.**
 
-## C++ / JUCE Rules
+Перед тем как усложнять конкретное место, поднимись на уровень выше и проверь,
+правильно ли выбрана граница решения. Если локальная реализация требует особых
+случаев, протаскивания состояния через несколько слоёв, знания деталей другого
+модуля или новой абстракции ради одной возможности — возможно, ответственность
+находится не там.
 
-- DSP runs in `src/PluginProcessor.*`; GUI runs in `src/PluginEditor.*`.
-- Keep small DSP helpers header-only in `src/*.h` unless there is a concrete reason otherwise.
-- Do not allocate, lock, open files, throw exceptions, or do string-heavy work in `processBlock`.
-- Allocate buffers and model state in `prepareToPlay`.
-- Read APVTS parameters in audio code through `getRawParameterValue(...)->load()`.
-- When adding or changing plugin parameters, update `CLAUDE.md`.
-- After C++ changes, run:
+Сравни как минимум:
+
+1. локальное решение;
+2. изменение контракта или перенос ответственности между модулями;
+3. устранение причины, из-за которой проблема возникает.
+
+Выбирай вариант с наименьшей общей когнитивной сложностью, даже если его diff
+не самый маленький. Не превращай это в бесконтрольный рефакторинг: исследуй
+только достаточный контекст, а расширение согласованного объёма работ сначала
+предложи пользователю.
+
+Спроси себя: «Я упрощаю реализацию в выбранном месте или систему в целом?»
+
+### Сначала простота
+
+**Минимум кода, решающий задачу. Ничего спекулятивного.**
+
+- Никаких функций сверх того, о чём просили.
+- Никаких абстракций для одноразового кода.
+- Никакой «гибкости» или «настраиваемости», которую не запрашивали.
+- Никакой обработки ошибок для невозможных сценариев.
+- Если ты написал 200 строк, а можно было 50 — перепиши.
+
+Спроси себя: «Сказал бы senior-инженер, что это переусложнено?» Если да — упрости.
+
+### Исполнение, управляемое целью
+
+**Определи критерии успеха. Повторяй цикл, пока не проверишь.**
+
+Превращай задачи в проверяемые цели:
+
+- «Добавь валидацию» → «Напиши тесты на некорректные входные данные, затем добейся
+  их прохождения»
+- «Почини баг» → «Напиши тест, воспроизводящий его, затем добейся его прохождения»
+- «Отрефактори X» → «Убедись, что тесты проходят до и после»
+
+Для многошаговых задач изложи краткий план:
+
+```
+1. [Шаг] → проверка: [контроль]
+2. [Шаг] → проверка: [контроль]
+3. [Шаг] → проверка: [контроль]
+```
+
+Сильные критерии успеха позволяют выполнять цикл самостоятельно. Слабые критерии
+(«просто сделай, чтобы работало») требуют постоянных уточнений.
+
+## Комментарии в коде
+
+Главный риск комментариев — они не успевают за развитием кода. Поэтому держим
+минимум, и по жёстким правилам.
+
+- **Комментарий отвечает на «почему», а не на «что» / «как».** «Что» и
+  «как» читается из самого кода — имени, типов, тела функции. Если не
+  читается — это сигнал переименовать / упростить / ввести тип, а не
+  дописать комментарий. «Почему» — мотив выбора, trade-off, неочевидный инвариант, намеренный отказ от
+  напрашивающейся альтернативы — такие комментарии только приветствуются.
+- **Не ссылайся из комментариев на поведение или инварианты других модулей.**
+  Такие ссылки протухают первыми при рефакторинге.
+
+
+# Инструкции по проекту BassEmulatorVST
+
+## Назначение и состояние
+
+BassEmulatorVST — VST3-плагин на JUCE для преобразования монофонической гитары в бас в реальном времени. Основной сценарий — запись басовых партий с гитары в Reaper. Цель — избежать неточного интонирования на атаке ноты, наблюдаемого, в частности, у Guitar Rig и Ampero Stomp.
+
+- Детекция ведётся на гитаре стандартного строя в диапазоне **E2 (82 Гц, ми большой октавы) — E4 (330 Гц, ми первой октавы)** в научной нотации SPN; эти ноты соответствуют открытым струнам.
+- Целевой диапазон бас-гитары — **E1 (41 Гц, ми контроктавы) — G3 (196 Гц)**. Гитара играет на октаву выше баса: **F₀(баса) = F₀(гитары) / 2**. В текущем синтезе диапазон детекции даёт E1–E3.
+- Текущий фокус — Phase 2A: определение высоты через PESTO, ANIRA и ONNX Runtime. PESTO выбран по итогам сравнения с YIN на гитарных записях. Phase 1 на YIN, детекторе атаки, огибающей, пилообразном осцилляторе и LadderFilter остаётся базой для сравнений.
+- `PluginProcessor` уже использует PESTO вместо YIN. Синтез тембра пока основан на DSP: переключаемые пила/синус, огибающая и LadderFilter. ML-синтез тембра ещё не интегрирован.
+- Исходники можно собирать под целевую ОС. Готовый Windows-бандл не запускается на macOS без отдельной сборки; Windows-специфичные загрузка DLL и настройки MSVC изолированы.
+
+## Документы
+
+- Этот `AGENTS.md` — единый рабочий контекст: архитектура, сборка, ML-команды и правила изменений.
+- `ROADMAP.md` — план фаз, backlog и открытые вопросы. Перед правкой сверяй его с кодом: часть описаний PESTO относится к прежней модели `mirror=0.8`.
+- `RESEARCH.md` — исследование подходов guitar→bass; `RESEARCH.html` — его HTML-представление.
+- `REVIEW.md` — исторический обзор `RESEARCH.md`; часть замечаний уже исправлена. Упоминания старых состояний и файлов в нём рассматривай как исторический контекст.
+- `docs/OPERATIONS.md` — настройка и эксплуатация плагина в Reaper; фиксирует обязательные 44,1 кГц.
+
+## Сборка плагина
 
 ```bash
+# Первая конфигурация, перенос или переименование проекта.
+# ANIRA требует явного CMAKE_BUILD_TYPE.
+cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+
+# Обычная пересборка, в том числе после изменений C++.
 cmake --build build --config Release
 ```
 
-Do not deploy the `.vst3` into the Reaper plugin directory unless explicitly asked.
+На Windows артефакт обычно находится в `build/BassEmulatorVST_artefacts/Release/VST3/BassEmulatorVST.vst3`. На других генераторах путь может отличаться. Деплой в Reaper выполняет пользователь: **не копируй `.vst3` в каталог плагинов без явной просьбы**. Прежний Windows-путь деплоя — `D:/Music/Plugins/BassEmulatorVST/`; перед заменой плагина его нужно закрыть в Reaper.
 
-## Python / ML Rules
+Справочная команда для ручного деплоя на прежнем Windows-окружении:
 
-The project-local Poetry executable lives inside `venv`. Activate the venv before Poetry commands:
+```bash
+cp -r build/BassEmulatorVST_artefacts/Release/VST3/BassEmulatorVST.vst3 "D:/Music/Plugins/BassEmulatorVST/"
+```
+
+`CMakeLists.txt` собирает VST3 с JUCE 7.0.12 через FetchContent, C++20, ANIRA и ONNX Runtime. Используются `juce_audio_utils`, `juce_dsp` и встроенный ресурс `PestoModelData`. Для конфигурации нужен именно `models/pesto.onnx`; если файла нет, экспортируй модель командой `poetry run python ml/pesto/export_onnx.py` после активации окружения. Модель встраивается в бандл при сборке. ANIRA подтягивает бинарники ONNX Runtime под целевую платформу; LibTorch и TFLite отключены, как и тесты, бенчмарки, примеры и документация ANIRA. На Windows CMake использует MSVC delay-load и копирует DLL в VST3-бандл и рядом с `juce_vst3_helper`.
+
+Зависимости: JUCE 7.0.12 (GPL, проект предназначен для личного использования), CMake 3.22+, C++20, MSVC / Visual Studio Build Tools для Windows, ANIRA и ONNX Runtime для текущего PESTO-инференса. В ранних заметках ANIRA и ONNX Runtime значились запланированными; теперь они подключены в `CMakeLists.txt`.
+
+## Структура проекта
+
+```text
+BassEmulatorVST/
+├── AGENTS.md                     — этот рабочий контекст
+├── CMakeLists.txt                — сборка VST3, JUCE, ANIRA, ONNX Runtime
+├── ROADMAP.md                    — фазы, задачи, backlog
+├── RESEARCH.md / RESEARCH.html   — исследование и HTML-представление
+├── REVIEW.md                     — исторический обзор исследования
+├── docs/OPERATIONS.md            — настройка и эксплуатация в Reaper
+├── src/                          — C++/JUCE-плагин
+│   ├── PluginProcessor.h/cpp     — DSP, APVTS, обработка аудио
+│   ├── PluginEditor.h/cpp        — интерфейс
+│   ├── PestoPitchDetector.h      — потоковый PESTO через ANIRA/ONNX
+│   ├── YinPitchDetector.h        — прежний YIN baseline, header-only
+│   ├── OnsetDetector.h           — детектор атаки по энергии, header-only
+│   └── EnvelopeFollower.h       — RC-огибающая, header-only
+├── ml/                           — Python/Poetry и ML-пайплайн
+│   ├── bass_synth/               — отдельный эксперимент с waveform guitar→bass
+│   │   ├── configs/train_v0.json — гиперпараметры, версии данных и модели
+│   │   ├── nn_architectures/     — WaveConvNet и DilatedConvNet через REGISTRY
+│   │   ├── train.py              — цикл обучения
+│   │   ├── process_audio.py      — оффлайн-инференс с overlap-add
+│   │   ├── import_dataset.py     — импорт WAV из Reaper в data/v0/
+│   │   └── slice_dataset.py      — нарезка окон в data/v0/windows/
+│   ├── pesto/                    — потоковое дообучение, экспорт и диагностика PESTO
+│   │   ├── finetune/             — обучение, distillation и vendor-код
+│   │   ├── export_onnx.py        — экспорт модели для плагина
+│   │   └── IMPROVING_PESTO.md   — гипотезы улучшения качества
+│   ├── pitch_eval/               — сравнение YIN/PESTO по WAV
+│   │   ├── run_eval.py           — метрики, сводки и графики F₀
+│   │   ├── eval_pesto_onnx.py    — сравнение потоковых ONNX-моделей
+│   │   ├── compare.py            — выравнивание F₀ и метрики расхождения
+│   │   ├── synthesize.py         — озвучка F₀-кривых пилой
+│   │   └── detectors/            — обёртки и REGISTRY: yin, pesto
+│   └── старые CLI-пути           — короткие обёртки для прежних команд
+├── notebooks/                    — исследовательские Jupyter-тетрадки
+├── scripts/                      — render_docs.py, yin_pseudo.py, pesto_pseudo.py
+├── data/v0/                      — данные, исключённые из Git
+│   ├── guitar/ и bass/           — пары исходных WAV
+│   ├── index.csv                 — индекс данных
+│   └── windows/                  — guitar.npy, bass.npy, meta.csv
+├── runs/                         — результаты, исключённые из Git
+│   ├── v0/YYYYMMDD_HHMMSS/      — best.pt, config.json, TensorBoard events
+│   └── pitch_eval/YYYYMMDD_HHMMSS/ — F₀ CSV, графики, summary
+├── processed/                    — выход process_audio.py, исключённый из Git
+│   └── {data}_{arch}_{model}/    — например, v0_WaveConvNet_v0/
+└── models/                       — экспортированные модели и метаданные
+```
+
+Структура отражает назначение каталогов; перед действиями проверяй наличие конкретных файлов. Для CMake нужен `models/pesto.onnx`, даже если другие версии лежат в подпапках `models/`.
+
+## C++ / JUCE
+
+- DSP находится в `src/PluginProcessor.*`, интерфейс — в `src/PluginEditor.*`. Небольшие DSP-помощники держи header-only в `src/*.h`, если нет конкретной причины выделить `.cpp`; такие заголовки не нужно добавлять в `CMakeLists.txt`.
+- Не выделяй память, не используй блокировки, исключения, файловый ввод-вывод и тяжёлые операции со строками в `processBlock`. Буферы и состояние модели подготавливай в `prepareToPlay`. Это касается и отладочного логирования.
+- Параметры APVTS в аудиокоде читай через `apvts.getRawParameterValue("id")->load()`. При добавлении параметра обновляй `createParameterLayout()`, соответствующий элемент GUI и attachment, а также таблицу ниже.
+- После изменений C++ выполняй `cmake --build build --config Release` и сообщай результат. Не запускай повторную конфигурацию без необходимости.
+
+### Текущие параметры APVTS
+
+| ID | Название | Диапазон | По умолчанию |
+|---|---|---|---:|
+| `filterCutoff` | Filter Cutoff | 100–2000 Гц | 800 |
+| `filterResonance` | Filter Resonance | 0–1 | 0.3 |
+| `envAttack` | Env Attack | 1–50 мс | 10 |
+| `envRelease` | Env Release | 10–500 мс | 100 |
+| `dryWet` | Dry/Wet | 0–1 | 1.0 |
+| `waveform` | Waveform | Saw / Sine | Saw |
+
+### Текущий `processBlock`
+
+```text
+Вход: гитара, канал 0
+  ├─→ OnsetDetector: скачок RMS > 6 дБ → triggerAttack()
+  ├─→ PestoPitchDetector: потоковый F₀ и confidence через ANIRA/ONNX
+  │     валидный F₀ → currentPitch = F₀ / 2
+  │     до первого валидного F₀: dry pass-through, без баса
+  ├─→ выбранный осциллятор Saw / Sine на currentPitch
+  │     × EnvelopeFollower от амплитуды входа
+  │     → LadderFilter LPF12 с cutoff/resonance
+  └─→ смешивание каждого выходного канала:
+        out = dry × (1 − wet) + bass × wet
+```
+
+Детекция на гитарном сигнале даёт более короткие периоды и меньшую необходимую задержку, чем детекция после синтеза. `pitchIsValid` исключает бас до первого устойчивого F₀. В `prepareToPlay` вызываются `pesto.prepare()` и `setLatencySamples(pesto.getLatencySamples())`.
+
+Модель PESTO экспортируется для потокового режима: 44,1 кГц, hop/chunk 441 сэмпл (10 мс), `mirror=1.0`, cache 3876 сэмплов, один F₀/confidence на вызов. Метаданные выбранного ONNX-файла должны совпадать с константами `PestoPitchDetector.h`. Модель рассчитана на 44,1 кГц; на другой частоте дискретизации F₀ будет транспонирован без реэкспорта CQT-ядер. Историческое сравнение YIN и прежних вариантов `mirror=0.8` находится в `ROADMAP.md` и `RESEARCH.md`.
+
+### Историческая база Phase 1
+
+До интеграции PESTO YIN обновлял F₀ каждые ~21 мс; OnsetDetector реагировал на скачок RMS более 6 дБ; пилообразный осциллятор на F₀/2 умножался на EnvelopeFollower и проходил через LadderFilter LPF12. При `pitchIsValid == false` выходил только сухой сигнал. Формула смешивания была той же: `out = dry * (1 - wet) + bass * wet`. Эти сведения нужны для регрессионных сравнений, но не описывают активный детектор в `PluginProcessor`.
+
+## Python / ML
+
+Локальный Poetry находится в `venv/bin/poetry`; перед командами активируй окружение:
 
 ```bash
 source venv/bin/activate
+
+# Подготовка данных: Reaper WAV → data/v0/ → data/v0/windows/{guitar,bass}.npy
+poetry run python -m ml.bass_synth.import_dataset
+poetry run python -m ml.bass_synth.slice_dataset
+
+# Обучение: читает ml/bass_synth/configs/train_v0.json
+poetry run python -m ml.bass_synth.train
+
+# Просмотр результатов
+tensorboard --logdir runs/
+
+# Оффлайн-инференс: --run указывает на каталог с best.pt и config.json
+poetry run python -m ml.bass_synth.process_audio \
+  --run runs/v0/YYYYMMDD_HHMMSS \
+  --input data/v0/guitar/
 ```
 
-Common commands:
+После активации работают `poetry`, `poetry run` и `poetry add`; без неё Poetry может отсутствовать в `PATH`. Сеть бывает нестабильной. Не устанавливай пакеты автоматически без явной просьбы; дай пользователю точную команду установки. Не запускай долгие обучения без явного запроса: для проверки используй короткий smoke test на 1–2 батчах.
 
-```bash
-poetry run python ml/import_dataset.py
-poetry run python ml/slice_dataset.py
-poetry run python ml/train.py
-poetry run python ml/process_audio.py --run runs/v0/YYYYMMDD_HHMMSS --input data/v0/guitar/
-```
+Архитектуры выбираются через `ml/bass_synth/nn_architectures/__init__.py::REGISTRY` (`name → class`). Для новой модели создай `ml/bass_synth/nn_architectures/my_model.py`, зарегистрируй имя и укажи `architecture: "my_model"` в `ml/bass_synth/configs/train_v0.json`; менять `train.py` для выбора модели не требуется. Аналогично функции потерь регистрируются через `ml/bass_synth/losses.py::LOSS_REGISTRY`. Гиперпараметры держи в конфиге, а не в `train.py`. `train.py` сохраняет снимок `config.json` рядом с `best.pt` в `runs/v0/<timestamp>/`; `process_audio.py` читает этот снимок для восстановления архитектуры и препроцессинга.
 
-Network can be unreliable. Do not install packages automatically unless explicitly asked. Prefer
-giving the exact install command to the user.
+Для PESTO: обычное дообучение запускается через `python -m ml.pesto.finetune.train`, генерация teacher-меток — через `python -m ml.pesto.finetune.generate_teacher_labels`, distillation — через `python -m ml.pesto.finetune.distill`. Их параметры лежат в `ml/pesto/finetune/config.py`. Экспорт в ONNX выполняет `ml/pesto/export_onnx.py`, а сравнение версий модели — `ml/pitch_eval/eval_pesto_onnx.py`. Запуск обучения и генерации меток требует явного запроса пользователя.
 
-Do not run long training jobs unless explicitly requested. Use short smoke checks when needed.
+При изменении интерфейса Python (ключей конфига, имён REGISTRY) проверь всех потребителей. Если правка пересекает C++ и Python, прочитай обе стороны: например, изменение длины окна в подготовке данных может повлиять на оффлайн-инференс и экспорт модели.
 
-## Documentation Rules
+## Документация и исследования
 
-- If `RESEARCH.md` changes, regenerate `RESEARCH.html` with:
+- При правке `RESEARCH.md` сохраняй читаемый обычный Markdown: списки, таблицы и кодовые блоки остаются Markdown. Не используй HTML-таблицы или `<div>`-обёртки ради оформления. Для стиля подходит `attr_list`, например `{: .approach-map}`. Блоки `<details>` допустимы с `markdown="1"`; расширение `md_in_html` уже включено. Не добавляй новые эмодзи без запроса.
+- Заголовки исследования имеют вид `§N. Название` без точки в конце, вложенные — `4.2.1`. Тон технический, ссылки на статьи и репозитории встроены в текст. Для сравнения pitch-методов сохраняй столбец «Задержка до первой ноты». Блокам кода указывай язык (`python`, `cpp`). Звезда ⭐ уже используется как маркер референсных проектов, например PESTO, ANIRA и Scyclone.
+- Перед правкой читай актуальную секцию `RESEARCH.md`; при работе по замечаниям сверяйся с `REVIEW.md`. Числа, названия параметров и другие нетривиальные утверждения подтверждай первоисточниками. Если данных нет, пиши `n/a`, не придумывай. Сохраняй структуру соседних секций и делай минимальную правку.
+- Для правок `RESEARCH.md` через Codex настроен `PostToolUse`-хук в `.codex/config.toml`; он вызывает `.codex/hooks/render_research_html.sh`. Хук должен быть доверен в Codex и требует установленных `markdown` и `pygments`. Правки во внешнем редакторе он не отслеживает. После изменения документа проверь HTML; при необходимости запусти генерацию вручную:
 
 ```bash
 source venv/bin/activate
 python3 scripts/render_docs.py
 ```
 
-- Keep `RESEARCH.md` readable as plain Markdown. Do not replace Markdown tables/lists with HTML
-  just for styling.
-- Use `research-editor` conventions from `.claude/agents/research-editor.md` when editing
-  `RESEARCH.md`.
-- Use `pm` conventions from `.claude/agents/pm.md` when editing `ROADMAP.md`.
+- `ROADMAP.md` редактируй как план: перед правкой прочитай его целиком, сверяй задачи с `RESEARCH.md` и кодом. Сохраняй существующие Markdown-чекбоксы и структуру фаз, не выдумывай сроки; даты указывай в ISO. При переносе задачи между фазами проверяй разделы «Текущее состояние» и backlog. Новые планировочные файлы создавай только по просьбе пользователя.
+- Исторический `REVIEW.md` не меняй без отдельной причины; он фиксирует состояние исследования на момент обзора. `scripts/render_docs.py` меняй только когда задача требует изменения рендера.
 
-## Role Boundaries
+## Рабочий процесс и Git
 
-These role files are inherited project guidance:
+1. Перед изменением прочитай затрагиваемые файлы и проверь состояние рабочей копии. Сохраняй пользовательские изменения; не откатывай и не перезаписывай несвязанные правки.
+2. Делай минимальный diff. Не рефактори соседний код и не переразмечай документацию без необходимости.
+3. После изменений C++ собирай Release; после изменений Python проверяй затронутые интерфейсы и используй короткие проверки. После изменений `RESEARCH.md` обновляй `RESEARCH.html`.
+4. При изменении параметров и пайплайна обновляй соответствующие разделы этого `AGENTS.md`. Статусы и backlog веди в `ROADMAP.md`, исследовательский материал — в `RESEARCH.md`.
+5. Сообщай кратко, что изменилось, почему, чем проверено и какие ограничения остались. Не коммить без явной просьбы пользователя.
 
-- `.claude/agents/developer.md` for code changes.
-- `.claude/agents/pm.md` for roadmap planning.
-- `.claude/agents/researcher.md` for research drafts.
-- `.claude/agents/research-editor.md` for `RESEARCH.md` edits.
-
-Codex subagents are not the same mechanism as Claude Code agents. When delegating work, give the
-subagent the relevant role file to read and a narrow, self-contained task.
-
-## Git / Worktree
-
-The worktree may contain user changes. Do not revert or overwrite unrelated changes. Do not commit
-unless explicitly asked.
+Если задача явно требует делегирования, передавай исполнителю узкий самостоятельный участок работы и нужный контекст из этого файла. Старые файлы ролей Claude Code для работы не требуются.

@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from pesto.model import ConfidenceClassifier
 
-from ml.finetune_pesto.vendor.reduce_activations import reduce_activations
+from ml.pesto.finetune.vendor.reduce_activations import reduce_activations
 
 
 class PESTODistillationModule(pl.LightningModule):
@@ -179,4 +179,3 @@ class PESTODistillationModule(pl.LightningModule):
             "mode": self.mode,
             "teacher_confidence_power": self.teacher_confidence_power,
         }
-

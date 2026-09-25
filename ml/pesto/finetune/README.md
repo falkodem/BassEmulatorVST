@@ -6,7 +6,7 @@ streaming HCQT через `CachedConv1d`, фиксированные `mirror` / 
 ## Структура
 
 ```
-ml/finetune_pesto/
+ml/pesto/finetune/
 ├── vendor/                  — копия минимума из pesto-full (LightningModule, encoder, losses, callback)
 ├── streaming_datamodule.py  — НАШ DataModule: on-the-fly streaming HCQT с random offset каждую эпоху
 ├── config.py                — dataclass со всеми гиперами
@@ -17,10 +17,10 @@ ml/finetune_pesto/
 
 ```bash
 # дефолт: 10 эпох, lr=1e-5, mirror=1.0, mirror_fn=refill
-poetry run python -m ml.finetune_pesto.train
+poetry run python -m ml.pesto.finetune.train
 
 # быстрая sanity-check на 2 эпохи
-poetry run python -m ml.finetune_pesto.train --epochs 2
+poetry run python -m ml.pesto.finetune.train --epochs 2
 ```
 
 После обучения в `runs/finetune_pesto/<timestamp>/` сохраняются:
@@ -46,10 +46,10 @@ poetry run python -m ml.finetune_pesto.train --epochs 2
 
 ```bash
 # upstream-like weighting из config.py, более смелый LR для fine-tune
-poetry run python -m ml.finetune_pesto.train --lr 3e-5
+poetry run python -m ml.pesto.finetune.train --lr 3e-5
 
 # если стабильно, попробовать reference LR из pesto-full
-poetry run python -m ml.finetune_pesto.train --lr 1e-4
+poetry run python -m ml.pesto.finetune.train --lr 1e-4
 ```
 
 Для старого поведения нужно выставить в `config.py`:
@@ -66,7 +66,7 @@ weight_equivariance = 1.0
 Реэкспортировать ONNX с дообученным чекпойнтом:
 
 ```bash
-poetry run python ml/utils/export_pesto_onnx.py \
+poetry run python ml/pesto/export_onnx.py \
     --model-name runs/finetune_pesto/<timestamp>/finetuned-<timestamp>.ckpt \
     --confidence-model mir-1k_g7
 ```
@@ -81,6 +81,18 @@ poetry run python ml/utils/export_pesto_onnx.py \
 например `--mirror 0.8 --mirror-fn zeros`.
 
 `models/pesto.onnx` обновится, дальше — пересборка плагина на Windows.
+
+## Distillation из ветки dev
+
+Режим teacher-student использует offline PESTO как источник покадровых меток для потоковой модели. Общие параметры обоих шагов находятся в `DistillConfig` (`config.py`), гипотезы и результаты — в `../IMPROVING_PESTO.md` и `../INPROVING_PESTO_LOG.md`.
+
+```bash
+poetry run python -m ml.pesto.finetune.generate_teacher_labels --help
+poetry run python -m ml.pesto.finetune.distill --help
+poetry run python ml/pitch_eval/eval_pesto_onnx.py --help
+```
+
+Первый скрипт создаёт teacher-метки, второй обучает confidence или pitch по этим меткам. Датасет и checkpoint в дефолтном конфиге содержат пути исходного окружения; перед запуском их нужно задать для текущей машины.
 
 ## Зависимости
 
