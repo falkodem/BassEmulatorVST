@@ -115,13 +115,24 @@ cmake --build build --config Release
 
 На Windows артефакт обычно находится в `build/BassEmulatorVST_artefacts/Release/VST3/BassEmulatorVST.vst3`. На других генераторах путь может отличаться. Деплой в Reaper выполняет пользователь: **не копируй `.vst3` в каталог плагинов без явной просьбы**. Прежний Windows-путь деплоя — `D:/Music/Plugins/BassEmulatorVST/`; перед заменой плагина его нужно закрыть в Reaper.
 
+На macOS arm64 JUCE 7.0.12 не компилируется с macOS 15 SDK из-за удалённого `CGWindowListCreateImage`. При наличии SDK 14.5 укажи его и для основной конфигурации, и для вложенной сборки `juceaide`:
+
+```bash
+SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX14.5.sdk \
+  cmake -B build -S . -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_OSX_SYSROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX14.5.sdk
+cmake --build build --config Release
+```
+
+Пока рабочая модель не выбрана, для проверки сборки добавь к конфигурации `-DPESTO_ONNX_PATH=/абсолютный/путь/к/архивному/pesto.onnx`. Это не меняет модель по умолчанию в исходниках. Путь сохраняется в `build/CMakeCache.txt`; после выбора рабочей модели явно переконфигурируй сборку с её путём. Если `build/` уже был сконфигурирован с SDK 15, у вложенной сборки `juceaide` может сохраниться старый `CMAKE_OSX_SYSROOT` в `build/_deps/juce-build/tools/CMakeCache.txt`; обнови его отдельной конфигурацией `juceaide` перед повторной конфигурацией проекта. macOS VST3 содержит библиотеки ANIRA, tanh и ONNX Runtime в `Contents/Frameworks`; после генерации `moduleinfo.json` бандл подписывается ad-hoc.
+
 Справочная команда для ручного деплоя на прежнем Windows-окружении:
 
 ```bash
 cp -r build/BassEmulatorVST_artefacts/Release/VST3/BassEmulatorVST.vst3 "D:/Music/Plugins/BassEmulatorVST/"
 ```
 
-`CMakeLists.txt` собирает VST3 с JUCE 7.0.12 через FetchContent, C++20, ANIRA и ONNX Runtime. Используются `juce_audio_utils`, `juce_dsp` и встроенный ресурс `PestoModelData`. Для конфигурации нужен именно `models/pesto.onnx`; если файла нет, экспортируй модель командой `poetry run python ml/pesto/export_onnx.py` после активации окружения. Модель встраивается в бандл при сборке. ANIRA подтягивает бинарники ONNX Runtime под целевую платформу; LibTorch и TFLite отключены, как и тесты, бенчмарки, примеры и документация ANIRA. На Windows CMake использует MSVC delay-load и копирует DLL в VST3-бандл и рядом с `juce_vst3_helper`.
+`CMakeLists.txt` собирает VST3 с JUCE 7.0.12 через FetchContent, C++20, ANIRA и ONNX Runtime. Используются `juce_audio_utils`, `juce_dsp` и встроенный ресурс `PestoModelData`. По умолчанию для конфигурации нужен `models/pesto.onnx`; альтернативный экспорт задаётся через `-DPESTO_ONNX_PATH=...`. Если выбранной модели ещё нет, экспортируй её командой `poetry run python ml/pesto/export_onnx.py` после активации окружения. Модель встраивается в бандл при сборке. ANIRA подтягивает бинарники ONNX Runtime под целевую платформу; LibTorch, TFLite, LiteRT и ExecuTorch отключены, как и тесты, бенчмарки, примеры и документация ANIRA. На Windows CMake использует MSVC delay-load и копирует DLL в VST3-бандл и рядом с `juce_vst3_helper`.
 
 Зависимости: JUCE 7.0.12 (GPL, проект предназначен для личного использования), CMake 3.22+, C++20, MSVC / Visual Studio Build Tools для Windows, ANIRA и ONNX Runtime для текущего PESTO-инференса. В ранних заметках ANIRA и ONNX Runtime значились запланированными; теперь они подключены в `CMakeLists.txt`.
 
@@ -199,10 +210,10 @@ BassEmulatorVST/
 
 ```text
 Вход: гитара, канал 0
-  ├─→ OnsetDetector: скачок RMS > 6 дБ → triggerAttack()
-  ├─→ PestoPitchDetector: потоковый F₀ и confidence через ANIRA/ONNX
-  │     валидный F₀ → currentPitch = F₀ / 2
-  │     до первого валидного F₀: dry pass-through, без баса
+  ├─→ OnsetDetector: скачок RMS > 6 дБ → triggerAttack(), сброс текущего F₀
+  ├─→ PestoPitchDetector: новые кадры F₀/confidence через ANIRA/ONNX
+  │     валидный F₀ → currentPitch = F₀ / 2; краткий пропуск ≤ 30 мс
+  │     после атаки: отсев кадров старой ноты; без актуального F₀: только dry-часть
   ├─→ выбранный осциллятор Saw / Sine на currentPitch
   │     × EnvelopeFollower от амплитуды входа
   │     → LadderFilter LPF12 с cutoff/resonance
@@ -210,7 +221,7 @@ BassEmulatorVST/
         out = dry × (1 − wet) + bass × wet
 ```
 
-Детекция на гитарном сигнале даёт более короткие периоды и меньшую необходимую задержку, чем детекция после синтеза. `pitchIsValid` исключает бас до первого устойчивого F₀. В `prepareToPlay` вызываются `pesto.prepare()` и `setLatencySamples(pesto.getLatencySamples())`.
+Детекция на гитарном сигнале даёт более короткие периоды и меньшую необходимую задержку, чем детекция после синтеза. Детектор отдаёт каждый результат инференса один раз; плагин удерживает частоту до 30 мс без нового уверенного кадра. При новой атаке бас сразу отключается, а детектор отбрасывает кадры, относящиеся к аудио до конца блока атаки. Cache PESTO передаётся между последовательными инференсами в worker-потоке ANIRA через `before_inference` и `after_inference`: заполнение cache в `pre_process` дало бы соседним кадрам устаревшее состояние. Это поведение требует слуховой проверки в Reaper. В `prepareToPlay` вызываются `pesto.prepare()`, `pesto.reset()` и `setLatencySamples(pesto.getLatencySamples())`.
 
 Модель PESTO экспортируется для потокового режима: 44,1 кГц, hop/chunk 441 сэмпл (10 мс), `mirror=1.0`, cache 3876 сэмплов, один F₀/confidence на вызов. Метаданные выбранного ONNX-файла должны совпадать с константами `PestoPitchDetector.h`. Модель рассчитана на 44,1 кГц; на другой частоте дискретизации F₀ будет транспонирован без реэкспорта CQT-ядер. Историческое сравнение YIN и прежних вариантов `mirror=0.8` находится в `ROADMAP.md` и `RESEARCH.md`.
 

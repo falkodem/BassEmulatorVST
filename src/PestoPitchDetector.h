@@ -1,7 +1,8 @@
 #pragma once
 
 #include <atomic>
-#include <cstdio>
+#include <bit>
+#include <cstdint>
 #include <vector>
 #include <algorithm>
 #include <anira/anira.h>
@@ -24,8 +25,8 @@
  *     ровно один F0/conf. ~25× меньше CPU.
  *
  *  3. **Cache state в C++.** ONNX Runtime stateless → выносим cache наружу как
- *     явный input/output тензор. Храним в `PestoProcessor::cache_state`,
- *     подкладываем в pre_process, читаем cache_out в post_process.
+ *     явный input/output тензор. Храним в `PestoProcessor::cache_state` и
+ *     передаём между последовательными инференсами в worker-потоке.
  *
  * ANIRA конфиг:
  *   inputs:   [0] audio  streamable     (1, kHopSamples)
@@ -46,12 +47,18 @@
  *   ─────────────────────────────────
  *   Total                      ~ 25 мс
  *
- * API мимикрирует YinPitchDetector: `process(buf, n)` возвращает F0 (Гц) или 0.0f
- * пока валидного питча ещё нет (initial buffering или unvoiced).
+ * process() отдаёт каждый новый кадр ровно один раз, включая unvoiced-кадры.
+ * Время удержания частоты и сброс на новой атаке контролирует плагин.
  */
 class PestoPitchDetector
 {
 public:
+    struct PitchFrame
+    {
+        float f0 = 0.0f;
+        bool updated = false;
+    };
+
     // ── параметры модели (должны совпадать с pesto.onnx + pesto_onnx_meta.json) ──
     static constexpr int          kSampleRate        = 44100;
     static constexpr int          kHopSamples        = 441;    // 10 мс — chunk на вызов
@@ -95,7 +102,8 @@ public:
                   /* postprocess_output_size     */ { 0, 0, 0, 0, 0 }
               ),
               kMaxInferenceMs,
-              kWarmUp),
+              kWarmUp,
+              true), // cache следующего кадра зависит от предыдущего инференса
           m_processor(m_config),
           m_handler(m_processor, m_config)
     {
@@ -115,57 +123,37 @@ public:
     {
         m_handler.reset();
         m_processor.reset_cache();
-        m_hasValid.store(false, std::memory_order_release);
-        m_lastPitch.store(0.0f, std::memory_order_relaxed);
-        m_debugCount = 0;
+        m_lastReadResult = 0;
+        m_samplesPushed = 0;
+        m_rejectThroughSample = 0;
     }
 
-    /** Толкаем блок аудио в инференс-пайплайн и возвращаем последний валидный F0 (Гц).
-     *  Возврат 0.0f означает «питч ещё не определён» — синтез должен пропустить блок.
+    /** Толкаем блок аудио в инференс-пайплайн и читаем только новый результат.
      *
      *  push_data() пихает аудио в RingBuffer ANIRA. Как только там накопилось
-     *  kHopSamples — triggers pre_process → ONNX run → post_process в worker-треде.
-     *  pop_data(nullptr, 0) дёргает new_data_request() в audio-треде, который
-     *  передаёт результаты в atomic storage — оттуда читаем get_output().
+     *  kHopSamples — pre_process в audio-треде, inference в worker-треде.
+     *  pop_data(nullptr, 0) собирает готовые кадры и вызывает post_process
+     *  в audio-треде.
      */
-    float process(const float* monoInput, int numSamples)
+    PitchFrame process(const float* monoInput, int numSamples, bool newOnset)
     {
         const float* const inputCh[1] = { monoInput };
         m_handler.push_data(inputCh, static_cast<size_t>(numSamples), 0);
+        m_samplesPushed += static_cast<std::uint64_t>(numSamples);
+        if (newOnset)
+            m_rejectThroughSample = m_samplesPushed;
         m_handler.pop_data(static_cast<float* const*>(nullptr), 0, 0);
 
-        const float conf = m_processor.get_output(kOutConf, 0);
-        const float f0   = m_processor.get_output(kOutF0,   0);
+        const auto result = m_processor.latestResult.load(std::memory_order_acquire);
+        if (result == m_lastReadResult)
+            return {};
 
-        // ── DEBUG: log first 500 blocks to D:\projects\BassEmulatorVST\pesto_debug.log
-        ++m_debugCount;
-        if (m_debugCount <= 500 && m_debugCount % 50 == 0)
-        {
-            if (FILE* fp = std::fopen("D:\\projects\\BassEmulatorVST\\pesto_debug.log", "a"))
-            {
-                std::fprintf(fp,
-                    "[%d] conf=%.4f f0=%.2f | hasValid=%d\n",
-                    m_debugCount, conf, f0,
-                    (int)m_hasValid.load(std::memory_order_relaxed));
-                std::fclose(fp);
-            }
-        }
-
-        if (conf >= kVoicedThreshold && f0 > 0.0f)
-        {
-            m_lastPitch.store(f0, std::memory_order_relaxed);
-            m_hasValid.store(true, std::memory_order_release);
-        }
-
-        return getCurrentPitch();
-    }
-
-    /** Последний валидный F0 (Гц), или 0.0f если ещё не было ни одного voiced-кадра. */
-    float getCurrentPitch() const
-    {
-        return m_hasValid.load(std::memory_order_acquire)
-             ? m_lastPitch.load(std::memory_order_relaxed)
-             : 0.0f;
+        m_lastReadResult = result;
+        // На атаке отбрасываем все кадры, завершившиеся до конца её блока.
+        const auto frameEndSample = (result >> 32) * kHopSamples;
+        if (frameEndSample <= m_rejectThroughSample)
+            return {};
+        return { std::bit_cast<float>(static_cast<std::uint32_t>(result)), true };
     }
 
     /** Латентность пайплайна в сэмплах (для setLatencySamples в processor).
@@ -177,11 +165,12 @@ public:
     }
 
 private:
-    // PestoProcessor хранит cache_state как member (не RT-safe atomic — обновляется
-    // только из inference-треда: pre_process читает, post_process пишет).
+    // cache_state используется только worker-потоком между вызовами модели.
     struct PestoProcessor : anira::PrePostProcessor
     {
         std::vector<float> cache_state;
+        std::atomic<std::uint64_t> latestResult { 0 };
+        std::uint32_t frameCounter = 0;
 
         explicit PestoProcessor(anira::InferenceConfig& cfg)
             : anira::PrePostProcessor(cfg), cache_state(kCacheSize, 0.0f) {}
@@ -193,30 +182,40 @@ private:
             // input #0: audio — забираем kHopSamples из RingBuffer
             pop_samples_from_buffer(input[kInAudio], output[kInAudio],
                                     static_cast<size_t>(kHopSamples));
+        }
 
-            // input #1: cache — копируем member-vector в ONNX-input буфер
-            float* cache_dst = output[kInCache].data();
-            std::copy(cache_state.begin(), cache_state.end(), cache_dst);
+        void before_inference(std::vector<anira::BufferF>& input,
+                              anira::InferenceBackend /*backend*/) override
+        {
+            std::copy(cache_state.begin(), cache_state.end(), input[kInCache].data());
+        }
+
+        void after_inference(std::vector<anira::BufferF>& output,
+                             anira::InferenceBackend /*backend*/) override
+        {
+            const float* cache_src = output[kOutCache].data();
+            std::copy(cache_src, cache_src + kCacheSize, cache_state.begin());
         }
 
         void post_process(std::vector<anira::BufferF>& input,
                           std::vector<anira::RingBuffer>& /*output*/,
                           anira::InferenceBackend /*backend*/) override
         {
-            // outputs 0,1,2: f0/conf/vol → atomic storage (один float каждый)
-            set_output(input[kOutF0].data()[0],   kOutF0,   0);
-            set_output(input[kOutConf].data()[0], kOutConf, 0);
-            set_output(input[kOutVol].data()[0],  kOutVol,  0);
-            // output 3 (activations) пропускаем — не используется для realtime
-
-            // output 4: cache_out → копируем в member-vector для следующего вызова
-            const float* cache_src = input[kOutCache].data();
-            std::copy(cache_src, cache_src + kCacheSize, cache_state.begin());
+            // Один атомарный снимок: номер кадра + F0 после voiced-гейта.
+            const float confidence = input[kOutConf].data()[0];
+            const float f0 = input[kOutF0].data()[0];
+            const float voicedF0 = confidence >= kVoicedThreshold && f0 > 0.0f
+                                 ? f0 : 0.0f;
+            const auto result = (static_cast<std::uint64_t>(++frameCounter) << 32)
+                              | std::bit_cast<std::uint32_t>(voicedF0);
+            latestResult.store(result, std::memory_order_release);
         }
 
         void reset_cache()
         {
             std::fill(cache_state.begin(), cache_state.end(), 0.0f);
+            frameCounter = 0;
+            latestResult.store(0, std::memory_order_relaxed);
         }
     };
 
@@ -224,7 +223,7 @@ private:
     PestoProcessor          m_processor;
     anira::InferenceHandler m_handler;
 
-    std::atomic<float> m_lastPitch  { 0.0f };
-    std::atomic<bool>  m_hasValid   { false };
-    int                m_debugCount { 0 };
+    std::uint64_t m_lastReadResult = 0;
+    std::uint64_t m_samplesPushed = 0;
+    std::uint64_t m_rejectThroughSample = 0;
 };

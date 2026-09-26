@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include <algorithm>
 
 // ── Windows: подгрузка бандлированных DLL ────────────────────────────────────
 // anira.dll и onnxruntime.dll лежат в Contents/x86_64-win/ рядом с плагином.
@@ -127,10 +128,12 @@ void BassEmulatorProcessor::prepareToPlay(double sampleRate, int samplesPerBlock
     onset.prepare(sampleRate);
     envFollower.prepare(sampleRate);
     pesto.prepare(sampleRate, samplesPerBlock);
+    pesto.reset();
     setLatencySamples(pesto.getLatencySamples());
 
     bassBuffer.setSize(1, samplesPerBlock);
     pitchIsValid = false;
+    pitchHoldSamplesRemaining = 0;
 }
 
 void BassEmulatorProcessor::releaseResources() {}
@@ -144,21 +147,43 @@ void BassEmulatorProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce:
 
     // --- Analysis on input signal ---
 
-    if (onset.process(inputData, numSamples))
-        envFollower.triggerAttack();
-
-    float detectedPitch = pesto.process(inputData, numSamples);
-    if (detectedPitch > 0.0f)
+    const bool newOnset = onset.process(inputData, numSamples);
+    if (newOnset)
     {
-        currentPitch = detectedPitch / 2.0f;
+        envFollower.triggerAttack();
+        pitchIsValid = false;
+        pitchHoldSamplesRemaining = 0;
+    }
+
+    const auto frame = pesto.process(inputData, numSamples, newOnset);
+
+    if (pitchIsValid)
+    {
+        pitchHoldSamplesRemaining = std::max(0, pitchHoldSamplesRemaining - numSamples);
+        if (pitchHoldSamplesRemaining == 0)
+            pitchIsValid = false;
+    }
+
+    if (frame.updated && frame.f0 > 0.0f)
+    {
+        currentPitch = frame.f0 / 2.0f;
         sawOsc.setFrequency(currentPitch);
         sineOsc.setFrequency(currentPitch);
         pitchIsValid = true;
+        // Три пропущенных 10-мс кадра допускаются, затем бас замолкает.
+        pitchHoldSamplesRemaining = 3 * PestoPitchDetector::kHopSamples;
     }
 
-    // Pass dry signal through until we have at least one valid pitch
+    // Без актуального F0 слышна только dry-часть, согласно Dry/Wet.
     if (!pitchIsValid)
+    {
+        const float dry = 1.0f - apvts.getRawParameterValue("dryWet")->load();
+        for (int i = 0; i < numSamples; ++i)
+            envFollower.processSample(inputData[i]);
+        for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+            buffer.applyGain(ch, 0, numSamples, dry);
         return;
+    }
 
     // --- Synthesis ---
 

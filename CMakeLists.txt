@@ -24,6 +24,8 @@ FetchContent_MakeAvailable(JUCE)
 set(ANIRA_WITH_ONNXRUNTIME ON  CACHE BOOL "" FORCE)
 set(ANIRA_WITH_LIBTORCH    OFF CACHE BOOL "" FORCE)
 set(ANIRA_WITH_TFLITE      OFF CACHE BOOL "" FORCE)
+set(ANIRA_WITH_LITERT      OFF CACHE BOOL "" FORCE)
+set(ANIRA_WITH_EXECUTORCH  OFF CACHE BOOL "" FORCE)
 set(ANIRA_WITH_TESTS       OFF CACHE BOOL "" FORCE)
 set(ANIRA_WITH_BENCHMARK   OFF CACHE BOOL "" FORCE)
 set(ANIRA_WITH_EXAMPLES    OFF CACHE BOOL "" FORCE)
@@ -67,13 +69,14 @@ target_compile_definitions(BassEmulatorVST PUBLIC
 
 # ── PESTO ONNX-модель как binary resource ─────────────────────────────────────
 # Модель встраивается в .vst3 на этапе сборки (плагин остаётся self-contained).
-# Файл лежит в models/ (gitignored) — если его нет, выдаём осмысленную ошибку.
-set(PESTO_ONNX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/models/pesto.onnx")
+# По умолчанию используем выбранную модель; для проверки сборки можно указать
+# сохранённый экспорт через -DPESTO_ONNX_PATH=/путь/к/pesto.onnx.
+set(PESTO_ONNX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/models/pesto.onnx"
+    CACHE FILEPATH "PESTO ONNX model to embed")
 if (NOT EXISTS "${PESTO_ONNX_PATH}")
     message(FATAL_ERROR
-        "models/pesto.onnx не найден. Сначала выпусти модель:\n"
-        "  source venv/bin/activate\n"
-        "  poetry run python ml/pesto/export_onnx.py")
+        "PESTO_ONNX_PATH не найден: ${PESTO_ONNX_PATH}.\n"
+        "Выбери модель для models/pesto.onnx или укажи архивный экспорт через -DPESTO_ONNX_PATH=...")
 endif()
 juce_add_binary_data(PestoModelData
     HEADER_NAME "PestoModelData.h"
@@ -92,6 +95,33 @@ target_link_libraries(BassEmulatorVST
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags
 )
+
+# На macOS shared-библиотеки ANIRA и ONNX Runtime должны ехать вместе с VST3.
+# JUCE запускает manifest helper сразу после линковки, поэтому копируем их до неё.
+if (APPLE)
+    set_target_properties(BassEmulatorVST_VST3 PROPERTIES
+        BUILD_WITH_INSTALL_RPATH TRUE
+        INSTALL_RPATH "@loader_path/../Frameworks")
+
+    set(BASS_FRAMEWORK_DIR "$<TARGET_BUNDLE_DIR:BassEmulatorVST_VST3>/Contents/Frameworks")
+    add_custom_command(TARGET BassEmulatorVST_VST3 PRE_LINK
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${BASS_FRAMEWORK_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:anira::anira>"
+            "${BASS_FRAMEWORK_DIR}/$<TARGET_SONAME_FILE_NAME:anira::anira>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:tanh::Core>"
+            "${BASS_FRAMEWORK_DIR}/$<TARGET_SONAME_FILE_NAME:tanh::Core>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:anira::onnxruntime>"
+            "${BASS_FRAMEWORK_DIR}/$<TARGET_FILE_NAME:anira::onnxruntime>"
+        VERBATIM)
+
+    # JUCE пишет moduleinfo.json после линковки, поэтому подпись ставится последней.
+    add_custom_command(TARGET BassEmulatorVST_VST3 POST_BUILD
+        COMMAND codesign --force --deep --sign - "$<TARGET_BUNDLE_DIR:BassEmulatorVST_VST3>"
+        VERBATIM)
+endif()
 
 # ── Windows delay-load для бандлированных DLL ────────────────────────────────
 # anira.dll и onnxruntime.dll лежат в x86_64-win/ внутри .vst3-бандла.

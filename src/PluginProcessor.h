@@ -46,6 +46,7 @@ private:
     juce::AudioBuffer<float> bassBuffer;
     float currentPitch = 110.0f;
     bool  pitchIsValid = false;
+    int   pitchHoldSamplesRemaining = 0;
 
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
