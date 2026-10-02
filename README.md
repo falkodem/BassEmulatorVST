@@ -3,6 +3,41 @@
 VST3-плагин на JUCE для преобразования монофонической гитары в бас в Reaper. Текущий детектор высоты тона использует потоковую модель PESTO через ANIRA/ONNX Runtime.
 
 Перед использованием прочитай [гайд по эксплуатации](docs/OPERATIONS.md): проект Reaper и аудиоустройство должны работать на 44,1 кГц. Актуальная структура исходников и команды разработки описаны в [AGENTS.md](AGENTS.md).
+Команды offline fine-tune, генерации teacher-меток, дистилляции и экспорта — в
+[README ML-пайплайна](ml/pesto/finetune/README.md).
+
+## Сборка с одной из трёх PESTO-моделей
+
+Для слухового сравнения подготовлены три потоковых ONNX-экспорта:
+
+| Вариант | ONNX в репозитории |
+|---|---|
+| `upstream_ce → KL` | `models/eval_upstream_ce_best_e084_pitch/pesto.onnx` |
+| `upstream_ce → KL+SSL` | `models/eval_upstream_ce_best_e084_pitch_kl_ssl_upstreamce/pesto.onnx` |
+| Старый `MIR → KL+SSL`, вес equivariance 1.0 | `models/eval_pitch_kl_ssl_equiv1_20260928_best/pesto.onnx` |
+
+Рядом с каждым ONNX лежит `pesto_onnx_meta.json` с checkpoint и параметрами
+экспорта. Все три модели рассчитаны на 44,1 кГц, chunk 441 сэмпл, cache 3876,
+`mirror=1.0/refill`; confidence-ветка во всех трёх оставлена от `mir-1k_g7`. Для
+сборки плагина Python, обучающие WAV и checkpoints из `runs/` не нужны.
+
+Плагин пока **не переключает модели во время работы**: CMake встраивает ровно
+один ONNX в каждый VST3. `models/pesto.onnx` сейчас отсутствует, поэтому путь
+нужно указать при конфигурации. Например, в PowerShell из корня репозитория:
+
+```powershell
+$model = (Resolve-Path 'models/eval_upstream_ce_best_e084_pitch/pesto.onnx').Path
+cmake -S . -B build/upstream-kl -DCMAKE_BUILD_TYPE=Release "-DPESTO_ONNX_PATH=$model"
+cmake --build build/upstream-kl --config Release
+```
+
+Для остальных вариантов подставь путь из таблицы и **другой** build-каталог,
+например `build/upstream-kl-ssl` или `build/old-kl-ssl-equiv1`. На Windows
+результат обычно находится в
+`build/<вариант>/BassEmulatorVST_artefacts/Release/VST3/BassEmulatorVST.vst3`.
+У этих сборок пока одинаковые имя и VST3-ID: храни готовые бандлы отдельно,
+а в Reaper проверяй по одному, закрывая его перед заменой установленного плагина.
+Требования к сборке описаны в [AGENTS.md](AGENTS.md#сборка-плагина).
 
 ## Исторические архитектурные заметки
 

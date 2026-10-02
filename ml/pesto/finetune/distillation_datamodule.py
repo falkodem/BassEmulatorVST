@@ -154,23 +154,26 @@ class PESTODistillationDataModule(pl.LightningDataModule):
             labels_path = self.teacher_labels_dir / item["labels_file"]
             available = int(item["num_frames"])
             source_frames = sf.info(wav_path).frames // self.chunk_size
-            if available < source_frames:
+            if available < source_frames and max_frames is None:
                 raise ValueError(
                     f"{wav_path.name}: labels contain {available} frames, "
                     f"but full distillation needs {source_frames}"
                 )
+            usable_frames = min(available, source_frames)
 
             if wav_path == self.validation_wav:
                 validation_found = True
-                split = int(source_frames * self.validation_start_fraction)
+                # A short smoke-test prefix cannot reach the full WAV midpoint.
+                split = int(usable_frames * self.validation_start_fraction)
                 train_stop = split if max_frames is None else min(split, max_frames)
-                val_stop = source_frames if max_frames is None else min(
-                    source_frames, split + max_frames
+                val_stop = usable_frames if max_frames is None else min(
+                    usable_frames, split + max_frames
                 )
-                self._train_ranges.append(FrameRange(wav_path, labels_path, 0, train_stop))
+                if train_stop:
+                    self._train_ranges.append(FrameRange(wav_path, labels_path, 0, train_stop))
                 self._val_ranges.append(FrameRange(wav_path, labels_path, split, val_stop))
             else:
-                stop = source_frames if max_frames is None else min(source_frames, max_frames)
+                stop = usable_frames if max_frames is None else min(usable_frames, max_frames)
                 self._train_ranges.append(FrameRange(wav_path, labels_path, 0, stop))
 
         if not validation_found:
@@ -440,4 +443,3 @@ class PESTODistillationDataModule(pl.LightningDataModule):
     def on_after_batch_transfer(self, batch, dataloader_idx: int):
         x, teacher_acts, teacher_conf, valid = batch
         return self.transforms(x), teacher_acts, teacher_conf, valid
-

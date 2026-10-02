@@ -177,11 +177,17 @@ def generate_labels(cfg: DistillConfig, overwrite: bool = False) -> Path:
         if not wav_path.is_file():
             raise FileNotFoundError(f"Training WAV not found: {wav_path}")
         output_path = output_dir / f"{wav_path.stem}.npz"
+        info = sf.info(wav_path)
+        expected_samples = info.frames if max_samples is None else min(info.frames, max_samples)
+        expected_frames = expected_samples // cfg.chunk_size
+        reuse_labels = False
         if output_path.exists() and not overwrite:
-            log.info("Keeping existing labels: %s", output_path)
             with np.load(output_path) as existing:
                 num_frames = int(existing["confidence"].shape[0])
                 num_samples = int(existing["num_samples"])
+            reuse_labels = num_frames == expected_frames and num_samples == expected_samples
+        if reuse_labels:
+            log.info("Keeping existing labels: %s", output_path)
         else:
             targets = infer_teacher_blockwise(
                 model, wav_path,
@@ -199,7 +205,6 @@ def generate_labels(cfg: DistillConfig, overwrite: bool = False) -> Path:
             num_samples = int(targets["num_samples"])
             log.info("Saved %s (%.1f MB)", output_path, output_path.stat().st_size / 1e6)
 
-        info = sf.info(wav_path)
         manifest["files"].append({
             "source_path": str(wav_path.resolve()),
             "source_frames": info.frames,

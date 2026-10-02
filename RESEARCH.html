@@ -1057,7 +1057,7 @@ Pip-installable. <strong>Лучший выбор для offline Python pipeline<
 <h3 id="сравнение-обновлено">Сравнение (обновлено)<a class="headerlink" href="#сравнение-обновлено" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code>Метод       Окно       RT      Транзиенты    Точность   Примечание
 ─────────────────────────────────────────────────────────────────────
-YIN         ~23 мс     Да      Умерен.       ~85-90%    Текущий. Бесплатно.
+YIN         ~23 мс     Да      Умерен.       ~85-90%    Исторический baseline.
 PYIN        ~50-100    Частич. Слабый        ~92%       HMM сглаживает
 CREPE       64 мс      Нет     Слабый        ~95%       Окно слишком большое
 PENN        5 мс       Нет*    Хороший       ~93%       * нет C++ порта
@@ -1065,9 +1065,9 @@ PESTO ⭐    &lt; 5 мс     Да      Хороший       ~92%       ONNX, RT-
 SwiftF0 ⭐  &lt; 5 мс     Да      Хороший       91.8%      Нет ONNX (пока)
 </code></pre></div>
 
-<p><strong>Рекомендация:</strong>
-- Offline (<code>process_audio.py</code>): PENN прямо сейчас
-- Phase 2 VST: PESTO через ONNX → RTNeural</p>
+<p><strong>Статус проекта:</strong> в текущем VST PESTO работает через ANIRA + ONNX Runtime;
+YIN оставлен как baseline. <code>ml/bass_synth/process_audio.py</code> относится к
+отдельному эксперименту синтеза тембра и не запускает PENN.</p>
 <hr />
 <h2 id="9-neural-architectures">9. Neural Architectures<a class="headerlink" href="#9-neural-architectures" title="Permanent link">&para;</a></h2>
 <h3 id="wavenet-style">WaveNet-style<a class="headerlink" href="#wavenet-style" title="Permanent link">&para;</a></h3>
@@ -1112,10 +1112,12 @@ ESR, DC loss, sum-and-difference (добавлен фев 2024), SI-SDR.</p>
 Острые атаки, реалистичный тембр. Нестабильное обучение.</p>
 <h3 id="рецепт-для-проекта">Рецепт для проекта<a class="headerlink" href="#рецепт-для-проекта" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><span class="n">L_total</span> <span class="o">=</span> <span class="n">L1_waveform</span> <span class="err">×</span> <span class="mf">0.1</span> <span class="o">+</span> <span class="n">MRSTFT</span><span class="p">(</span><span class="n">fft_sizes</span><span class="o">=</span><span class="p">[</span><span class="mi">512</span><span class="p">,</span> <span class="mi">1024</span><span class="p">,</span> <span class="mi">2048</span><span class="p">,</span> <span class="mi">4096</span><span class="p">])</span> <span class="err">×</span> <span class="mf">1.0</span>
-<span class="c1"># Phase 2A (conditioned): + envelope_loss × 0.5  (пока не реализован в ml/train.py)</span>
+<span class="c1"># Для будущего conditioned ML: + envelope_loss × 0.5</span>
 </code></pre></div>
 
-<p>Фактическая реализация: <code>ml/train.py</code>. <code>envelope_loss</code> в текущем baseline отсутствует.</p>
+<p>Это предлагаемый рецепт, не текущая конфигурация. В эксперименте
+<code>ml/bass_synth/train.py</code> выбран <code>multi_scale_stft</code> из <code>LOSS_REGISTRY</code>:
+<code>MultiScaleSTFTLoss</code> использует FFT 128/256/512 без <code>envelope_loss</code>.</p>
 <hr />
 <h2 id="11-датасеты">11. Датасеты<a class="headerlink" href="#11-датасеты" title="Permanent link">&para;</a></h2>
 <h3 id="slakh2100-лучший-старт">Slakh2100 ⭐ — лучший старт<a class="headerlink" href="#slakh2100-лучший-старт" title="Permanent link">&para;</a></h3>
@@ -1187,13 +1189,18 @@ ESR, DC loss, sum-and-difference (добавлен фев 2024), SI-SDR.</p>
 </code></pre></div>
 
 <blockquote>
-<p><strong>Важно:</strong> <code>PluginProcessor.cpp</code> сейчас <strong>не вызывает <code>setLatencySamples()</code></strong> — DAW-компенсация в записи не работает. Подробнее — §12.6.</p>
+<p><strong>Статус реализации:</strong> таблица выше — исторический бюджет Phase 2A. Текущий
+<code>PluginProcessor::prepareToPlay()</code> вызывает <code>setLatencySamples(pesto.getLatencySamples())</code>
+для потокового PESTO. Фактическую задержку и PDC ещё нужно проверить в Reaper.</p>
 </blockquote>
 <h3 id="126-daw-latency-compensation">12.6 DAW latency compensation<a class="headerlink" href="#126-daw-latency-compensation" title="Permanent link">&para;</a></h3>
-<p>JUCE-плагин должен вызывать <code>setLatencySamples(N)</code> чтобы DAW сдвинула дорожку при записи и компенсировала алгоритмическую задержку. В текущем коде этот вызов <strong>отсутствует</strong> — записанный бас будет смещён вправо на ~23 мс (YIN-окно) + размер processBlock. На ритм-партиях это слышно.</p>
-<p>Что делать: в <code>prepareToPlay</code> вызвать <code>setLatencySamples(yinWindowSamples + modelLookahead)</code>. DAW автоматически сдвинет дорожку при записи.</p>
+<p>JUCE-плагин сообщает DAW свою задержку через <code>setLatencySamples(N)</code>. В текущем
+<code>PluginProcessor::prepareToPlay()</code> уже вызывается
+<code>setLatencySamples(pesto.getLatencySamples())</code>: величину сообщает ANIRA, а
+дополнительный look-back для выбранного <code>mirror=1.0</code> равен нулю. Проверка
+фактического PDC при записи в Reaper остаётся открытой.</p>
 <h3 id="125-inference-engines-для-juce-плагина">12.5 Inference engines для JUCE-плагина<a class="headerlink" href="#125-inference-engines-для-juce-плагина" title="Permanent link">&para;</a></h3>
-<h4 id="rtneural-текущий">RTNeural (текущий)<a class="headerlink" href="#rtneural-текущий" title="Permanent link">&para;</a></h4>
+<h4 id="rtneural-кандидат-для-будущего-ml-тембра">RTNeural (кандидат для будущего ML-тембра)<a class="headerlink" href="#rtneural-кандидат-для-будущего-ml-тембра" title="Permanent link">&para;</a></h4>
 <p><a href="https://github.com/jatinchowdhary18/RTNeural">GitHub</a> — активно поддерживается (175+ коммитов, CI/CD).</p>
 <ul>
 <li>Загружает веса из JSON напрямую → минималистичная интеграция</li>
@@ -1220,7 +1227,7 @@ ESR, DC loss, sum-and-difference (добавлен фев 2024), SI-SDR.</p>
 </thead>
 <tbody>
 <tr>
-<td>GRU baseline (Phase 2B текущий)</td>
+<td>GRU baseline (будущий Phase 2B)</td>
 <td>RTNeural — проще, меньше зависимостей</td>
 </tr>
 <tr>

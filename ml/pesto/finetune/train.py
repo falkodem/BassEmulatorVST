@@ -1,4 +1,4 @@
-"""Entry point for fine-tuning PESTO on guitar audio in streaming mode.
+"""Entry point for fine-tuning PESTO on guitar audio.
 
 Usage:
     poetry run python -m ml.pesto.finetune.train
@@ -6,9 +6,8 @@ Usage:
 
 What it does:
  1. Loads pretrained `mir-1k_g7` checkpoint to get encoder weights + hparams
- 2. Builds GuitarStreamingDataModule that produces CQT frames mimicking
-    plugin's runtime conditions (streaming CachedConv1d, mirror=1.0, refill)
- 3. Fine-tunes with PESTO self-supervised losses (invariance + equivariance + SCE)
+ 2. Builds streaming HCQT for the plugin or offline HCQT with real future context
+ 3. Fine-tunes with PESTO self-supervised losses (invariance + equivariance + selected shift loss)
  4. Saves checkpoint as pesto-compatible .ckpt (loadable via `pesto.load_model`)
  5. To deploy in plugin: re-run `ml/pesto/export_onnx.py --model-name <ckpt>`
 """
@@ -23,6 +22,7 @@ from pathlib import Path
 import torch
 import torch.optim as optim
 import pytorch_lightning as pl
+from pesto.model import ConfidenceClassifier
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
 
@@ -31,14 +31,16 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
 from ml.pesto.finetune.config import TrainConfig
+from ml.pesto.finetune.augmentations import BatchRandomGain, BatchRandomNoise
 from ml.pesto.finetune.streaming_datamodule import GuitarStreamingDataModule
+from ml.pesto.finetune.offline_datamodule import GuitarOfflineDataModule
 from ml.pesto.finetune.vendor.networks.resnet1d import Resnet1d
 from ml.pesto.finetune.vendor.pesto_module import PESTO, PitchShiftCQT
-from ml.pesto.finetune.vendor.losses import CrossEntropyLoss, ShiftCrossEntropy, PowerSeries
+from ml.pesto.finetune.vendor.losses import CrossEntropyLoss, ShiftCrossEntropy, ShiftWasserstein2, PowerSeries
 from ml.pesto.finetune.vendor.loss_weighting import GradientsLossWeighting, LossWeighting
 from ml.pesto.finetune.vendor.pesto_module import nn  # for transforms list
 
-# Reuse pesto-full's ToLogMagnitude / Augmentations. They're tiny; inline them.
+# Reuse pesto-full's ToLogMagnitude.
 import torch.nn as _nn
 
 
@@ -55,42 +57,6 @@ class ToLogMagnitude(_nn.Module):
         x = x.abs()
         x.clamp_(min=self.eps).log10_().mul_(20)
         return x
-
-
-class BatchRandomNoise(_nn.Module):
-    # Defaults from pesto-full configs/model/default.yaml (NOT from transforms.py module defaults)
-    def __init__(self, min_snr: float = 0.1, max_snr: float = 2.0, p: float = 0.7):
-        super().__init__()
-        self.min_snr = min_snr
-        self.max_snr = max_snr
-        self.p = p
-
-    def forward(self, x):
-        bs = x.size(0)
-        device = x.device
-        snr = torch.empty(bs, device=device).uniform_(self.min_snr, self.max_snr)
-        mask = torch.rand_like(snr).le(self.p)
-        snr[mask] = 0
-        noise_std = snr * x.view(bs, -1).std(dim=-1)
-        noise_std = noise_std.unsqueeze(-1).expand_as(x.view(bs, -1)).view_as(x)
-        return x + noise_std * torch.randn_like(x)
-
-
-class BatchRandomGain(_nn.Module):
-    def __init__(self, min_gain: float = 0.5, max_gain: float = 1.5, p: float = 0.7):
-        super().__init__()
-        self.min_gain = min_gain
-        self.max_gain = max_gain
-        self.p = p
-
-    def forward(self, x):
-        bs = x.size(0)
-        device = x.device
-        vol = torch.empty(bs, device=device).uniform_(self.min_gain, self.max_gain)
-        mask = torch.rand_like(vol).le(self.p)
-        vol[mask] = 1
-        vol = vol.unsqueeze(-1).expand_as(x.view(bs, -1)).view_as(x)
-        return vol * x
 
 
 log = logging.getLogger(__name__)
@@ -163,12 +129,15 @@ def build_pesto_module(cfg: TrainConfig) -> tuple[PESTO, dict]:
         max_steps=pitch_shift_hparams['max_steps'],
     )
 
-    # losses (defaults from pesto-full default config)
-    inv_loss = CrossEntropyLoss(symmetric=True, detach_targets=True)
-    sce_loss = ShiftCrossEntropy(
-        pad_length=pitch_shift_hparams['max_steps'],
-        criterion=inv_loss,
+    inv_loss = CrossEntropyLoss(
+        symmetric=True, detach_targets=True, mode=cfg.ssl_cross_entropy
     )
+    if cfg.shift_loss == "wasserstein2":
+        shift_loss = ShiftWasserstein2(pad_length=pitch_shift_hparams['max_steps'])
+    else:
+        shift_loss = ShiftCrossEntropy(
+            pad_length=pitch_shift_hparams['max_steps'], criterion=inv_loss
+        )
     equiv_loss = PowerSeries(
         value=2 ** (1/36),                     # 1.019440644 (cubic root of semitone @ bps=3)
         power_min=1 - encoder_hparams['output_dim'],
@@ -187,14 +156,18 @@ def build_pesto_module(cfg: TrainConfig) -> tuple[PESTO, dict]:
         optimizer_cls=opt_partial,
         scheduler_cls=sched_partial,
         equiv_loss_fn=equiv_loss,
-        sce_loss_fn=sce_loss,
+        shift_loss_fn=shift_loss,
+        shift_loss_name=cfg.shift_loss,
         inv_loss_fn=inv_loss,
         pitch_shift=pitch_shift,
         transforms=[BatchRandomNoise(), BatchRandomGain()],
         reduction=checkpoint['hparams'].get('reduction', 'alwa'),
     )
+    if not any(key.startswith('confidence.') for key in checkpoint['state_dict']):
+        raise ValueError(f"Pretrained checkpoint has no confidence weights: {ckpt_path}")
+    module.confidence = ConfidenceClassifier().requires_grad_(False)
 
-    # load weights (strict=False to skip non-trained items like preprocessor's CQT kernels)
+    # Retain the pretrained confidence head for teacher inference; only the encoder is optimized.
     missing, unexpected = module.load_state_dict(checkpoint['state_dict'], strict=False)
     log.info("Loaded state_dict: missing=%d, unexpected=%d", len(missing), len(unexpected))
     if missing:
@@ -213,6 +186,10 @@ def parse_args() -> TrainConfig:
     parser.add_argument('--lr', type=float, default=cfg.lr)
     parser.add_argument('--batch-size', type=int, default=cfg.batch_size)
     parser.add_argument('--precompute-batch', type=int, default=cfg.precompute_batch)
+    parser.add_argument('--frontend', choices=['streaming', 'offline'], default=cfg.frontend)
+    parser.add_argument('--shift-loss', choices=['shift_entropy', 'wasserstein2'],
+                        default=cfg.shift_loss)
+    parser.add_argument('--offline-block-frames', type=int, default=cfg.offline_block_frames)
     parser.add_argument('--mirror', type=float, default=cfg.mirror)
     parser.add_argument('--mirror-fn', choices=['zeros', 'refill'], default=cfg.mirror_fn)
     parser.add_argument('--num-workers', type=int, default=cfg.num_workers)
@@ -233,6 +210,9 @@ def parse_args() -> TrainConfig:
     cfg.lr = args.lr
     cfg.batch_size = args.batch_size
     cfg.precompute_batch = args.precompute_batch
+    cfg.frontend = args.frontend
+    cfg.shift_loss = args.shift_loss
+    cfg.offline_block_frames = args.offline_block_frames
     cfg.mirror = args.mirror
     cfg.mirror_fn = args.mirror_fn
     cfg.num_workers = args.num_workers
@@ -242,7 +222,7 @@ def parse_args() -> TrainConfig:
     cfg.run_name = args.run_name
     cfg.accelerator = args.accelerator
     cfg.precision = args.precision
-    cfg.max_minutes = args.max_minutes  # type: ignore[attr-defined]
+    cfg.max_minutes = args.max_minutes
     cfg.__post_init__()
     return cfg
 
@@ -266,8 +246,11 @@ def main() -> int:
     log.info("Saved config snapshot: %s", config_path)
 
     # data
-    datamodule = GuitarStreamingDataModule(
+    datamodule_cls = (GuitarOfflineDataModule if cfg.frontend == 'offline'
+                      else GuitarStreamingDataModule)
+    datamodule = datamodule_cls(
         wav_paths=cfg.wav_paths,
+        max_minutes=cfg.max_minutes,
         sample_rate=cfg.sample_rate,
         chunk_size=cfg.chunk_size,
         precompute_batch=cfg.precompute_batch,
@@ -284,6 +267,7 @@ def main() -> int:
         mirror_fn=cfg.mirror_fn,
         model_name=cfg.pretrained,
         transforms=[ToLogMagnitude()],
+        **({'block_frames': cfg.offline_block_frames} if cfg.frontend == 'offline' else {}),
     )
 
     # model
@@ -293,7 +277,8 @@ def main() -> int:
     loss_weights = {
         "invariance": cfg.weight_invariance,
         "equivariance": cfg.weight_equivariance,
-        "shift_entropy": cfg.weight_shift_entropy,
+        cfg.shift_loss: (cfg.weight_wasserstein2 if cfg.shift_loss == "wasserstein2"
+                         else cfg.weight_shift_entropy),
     }
     if cfg.loss_weighting == "gradients":
         loss_weighting = GradientsLossWeighting(weights=loss_weights, ema_rate=cfg.loss_weighting_ema)
@@ -344,9 +329,12 @@ def main() -> int:
     final_ckpt = run_dir / f"finetuned-{cfg.run_name}.ckpt"
     log.info("Saving final checkpoint to %s (loadable by pesto.load_model)", final_ckpt)
     trainer.save_checkpoint(str(final_ckpt))
-    log.info("Done. Re-export ONNX with:")
-    log.info("  poetry run python ml/pesto/export_onnx.py --model-name %s "
-             "--mirror %.2f --mirror-fn %s", final_ckpt, cfg.mirror, cfg.mirror_fn)
+    if cfg.frontend == 'offline':
+        log.info("Done. Use this checkpoint as an offline teacher for label generation: %s", final_ckpt)
+    else:
+        log.info("Done. Re-export ONNX with:")
+        log.info("  poetry run python ml/pesto/export_onnx.py --model-name %s "
+                 "--mirror %.2f --mirror-fn %s", final_ckpt, cfg.mirror, cfg.mirror_fn)
     return 0
 
 

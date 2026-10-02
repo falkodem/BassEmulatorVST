@@ -26,7 +26,7 @@ DEFAULT_MODELS = (
     ROOT / "models" / "20260706_110636" / "pesto.onnx",
     ROOT / "models" / "20260707_112408" / "pesto.onnx",
 )
-NOTE_RE = re.compile(r"^([A-G])(#?)(-?\d+)(?:_|$)")
+NOTE_RE = re.compile(r"^(?:\d+-)?([A-G])(#?)(-?\d+)(?:_|$)")
 SEMITONES = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
 PITCH_JUMP_THRESHOLD_CENTS = 50.0
 CONFIDENCE_SWEEP_THRESHOLDS = tuple(index / 10.0 for index in range(1, 10))
@@ -448,7 +448,9 @@ def main() -> int:
     output = args.output or (
         ROOT / "runs" / "pitch_eval" / f"onnx_models_{datetime.now():%Y%m%d_%H%M%S}"
     )
-    wav_paths = sorted(args.input.glob("*.wav"))
+    wav_paths = sorted(
+        path for path in args.input.glob("*.wav") if " render " not in path.stem
+    )
     if not wav_paths:
         raise FileNotFoundError(f"No WAV files found in {args.input}")
 

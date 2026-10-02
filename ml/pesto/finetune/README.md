@@ -1,109 +1,194 @@
-# Fine-tune PESTO для streaming-инференса
+# PESTO: fine-tune и distillation
 
-Дообучение `mir-1k_g7` на гитарном датасете в условиях, идентичных тому что видит плагин:
-streaming HCQT через `CachedConv1d`, фиксированные `mirror` / `mirror_fn`, тот же sample_rate / chunk_size / gamma.
+Offline PESTO с настоящим будущим контекстом адаптируется к гитаре и выдаёт
+покадровые метки для streaming student. Student видит только пришедшее аудио
+(`mirror=1.0/refill`), как плагин. Команды ниже выполняются **внутри** контейнера
+`trainloop-pesto-train`, из `/workspace`, обычным `python`. Запуск контейнера и
+просмотр логов описаны в [Docker README](../../../docker/pesto-train/README.md).
 
-## Структура
+## Данные и разбиение
 
-```
-ml/pesto/finetune/
-├── vendor/                  — копия минимума из pesto-full (LightningModule, encoder, losses, callback)
-├── streaming_datamodule.py  — НАШ DataModule: on-the-fly streaming HCQT с random offset каждую эпоху
-├── config.py                — dataclass со всеми гиперами
-└── train.py                 — entry point
-```
-
-## Запуск
+Четыре WAV лежат на сервере в `data/pesto_train/`, внутри контейнера — в `/data`.
+Во всех командах используются 44 100 Гц и шаг 441 сэмпл (10 мс).
 
 ```bash
-# дефолт: 10 эпох, lr=1e-5, mirror=1.0, mirror_fn=refill
-poetry run python -m ml.pesto.finetune.train
-
-# быстрая sanity-check на 2 эпохи
-poetry run python -m ml.pesto.finetune.train --epochs 2
+WAVS=(
+  /data/19-PESTO_0-260606_1408.wav
+  /data/20-PESTO_1-260607_1530.wav
+  /data/21-PESTO_2-260726_2105.wav
+  /data/22-PESTO_3-260726_2117.wav
+)
 ```
 
-После обучения в `runs/finetune_pesto/<timestamp>/` сохраняются:
-- `config.json` — полный снимок конфигурации запуска.
-- `last.ckpt` — последний checkpoint для resume.
-- `best-epoch=...-train_loss=....ckpt` — лучший checkpoint по среднему итоговому `train_loss` за эпоху.
-- `finetuned-<timestamp>.ckpt` — финальное состояние после завершения обучения.
+Offline fine-tune обучается на `19`, `20`, `22`; скрипт **не имеет настоящей
+валидации**. Файл `21` туда не передаётся. Для distillation метки создаются на
+всех четырёх WAV, но `--validation-wav /data/21-...` целиком исключает `21` из
+train: в текущем `DistillConfig.validation_start_fraction=0.0`. Внутри train
+покадровые примеры перемешиваются; validation не перемешивается.
 
-## Улучшение обучения
-
-`invariance` и `shift_entropy` около `5.4-5.5` находятся близко к entropy baseline
-для почти равномерных pitch activations, поэтому важнее смотреть, двигаются ли они
-ниже этого уровня и не происходит ли collapse. Дефолтный режим в `config.py`
-теперь ближе к `pesto-full`: `GradientsLossWeighting` со стартовыми весами
-`shift_entropy=1`, `invariance=0`, `equivariance=0`.
-
-Эти настройки живут в `TrainConfig`: `loss_weighting`, `loss_weighting_ema`,
-`weight_invariance`, `weight_equivariance`, `weight_shift_entropy`. В режиме
-`gradients` веса являются начальными и дальше обновляются каждый batch по нормам
-градиентов; в режиме `fixed` они остаются постоянными.
-
-Рекомендуемые первые прогоны:
+## 1. Offline fine-tune teacher
 
 ```bash
-# upstream-like weighting из config.py, более смелый LR для fine-tune
-poetry run python -m ml.pesto.finetune.train --lr 3e-5
-
-# если стабильно, попробовать reference LR из pesto-full
-poetry run python -m ml.pesto.finetune.train --lr 1e-4
+python -u -m ml.pesto.finetune.train \
+  --frontend offline --pretrained mir-1k_g7 \
+  --wav "${WAVS[0]}" "${WAVS[1]}" "${WAVS[3]}" \
+  --epochs 150 --accelerator gpu \
+  --run-name offline_mir_upstream_ce_next
 ```
 
-Для старого поведения нужно выставить в `config.py`:
+`train.py` строит offline HCQT блоками с настоящим контекстом слева и справа,
+считает три self-supervised loss PESTO (`invariance`, `shift_entropy`,
+`equivariance`) и оптимизирует pitch encoder. Confidence-head из `mir-1k_g7`
+сохраняется, но не обучается. Текущий `TrainConfig` задаёт batch 512, LR `1e-5`,
+80 эпох по умолчанию (здесь явно 150), `loss_weighting=gradients` и начальные
+веса loss `0/1/0` в порядке invariance/shift-entropy/equivariance. Весами затем
+управляет нормализация по градиентам; это не фиксированные коэффициенты.
+`ssl_cross_entropy=upstream` применяет второй softmax в двух CE-loss и не
+выбирается отдельным CLI-флагом для fine-tune. Каждый epoch выбирается случайный
+sample offset; validation hook пересчитывает абсолютный `shift` на синтетических
+нотах, а не на наших WAV.
 
-```python
-loss_weighting = "fixed"
-weight_invariance = 1.0
-weight_shift_entropy = 1.0
-weight_equivariance = 1.0
-```
-
-## Деплой
-
-Реэкспортировать ONNX с дообученным чекпойнтом:
+Альтернативный запуск меняет только `shift_entropy` на одномерное W₂:
 
 ```bash
-poetry run python ml/pesto/export_onnx.py \
-    --model-name runs/finetune_pesto/<timestamp>/finetuned-<timestamp>.ckpt \
-    --confidence-model mir-1k_g7
+python -u -m ml.pesto.finetune.train \
+  --frontend offline --shift-loss wasserstein2 --pretrained mir-1k_g7 \
+  --wav "${WAVS[0]}" "${WAVS[1]}" "${WAVS[3]}" \
+  --epochs 150 --accelerator gpu \
+  --run-name offline_mir_wasserstein2_next
 ```
 
-`--confidence-model` опционален. Если он не указан, confidence остаётся тем,
-который загрузился из `--model-name`. Для checkpoint текущего fine-tune он нужен,
-поскольку training-модель сохраняет encoder и shift, но не confidence-head.
-
-Экспортёр автоматически читает `config.json` рядом с checkpoint и использует
-из него `sample_rate`, `chunk_size`, `mirror` и `mirror_fn`. Можно передать другой
-файл через `--train-config`. Явные параметры CLI имеют приоритет над конфигом,
-например `--mirror 0.8 --mirror-fn zeros`.
-
-`models/pesto.onnx` обновится, дальше — пересборка плагина на Windows.
-
-## Distillation из ветки dev
-
-Режим teacher-student использует offline PESTO как источник покадровых меток для потоковой модели. Общие параметры обоих шагов находятся в `DistillConfig` (`config.py`), гипотезы и результаты — в `../IMPROVING_PESTO.md` и `../INPROVING_PESTO_LOG.md`.
+Тот же `train.py` может дообучать модель сразу в streaming-условиях, без
+teacher и KL; это отдельный SSL-only эксперимент, не шаг получения offline
+teacher:
 
 ```bash
-poetry run python -m ml.pesto.finetune.generate_teacher_labels --help
-poetry run python -m ml.pesto.finetune.distill --help
-poetry run python ml/pitch_eval/eval_pesto_onnx.py --help
+python -u -m ml.pesto.finetune.train \
+  --frontend streaming --pretrained mir-1k_g7 \
+  --wav "${WAVS[0]}" "${WAVS[1]}" "${WAVS[3]}" \
+  --epochs 150 --accelerator gpu \
+  --run-name streaming_mir_ssl_next
 ```
 
-Первый скрипт создаёт teacher-метки, второй обучает confidence или pitch по этим меткам. Датасет и checkpoint в дефолтном конфиге содержат пути исходного окружения; перед запуском их нужно задать для текущей машины.
+В `runs/finetune_pesto/<run-name>/` пишутся `config.json`, TensorBoard events,
+`last.ckpt`, `best-epoch=...-train_loss=....ckpt` и финальный
+`finetuned-<run-name>.ckpt`. Для teacher выбирай **best**, но помни: это
+минимум train loss, не независимая validation-метрика; качество следует отдельно
+проверить на отложенном `21` и нотных WAV. Offline checkpoint сам по себе не
+предназначен для плагина.
 
-## Зависимости
+## 2. Offline teacher-метки
 
-Помимо текущих:
-- `pytorch-lightning` (для Trainer / LightningModule)
+Пример для уже обученного лучшего `upstream_ce` checkpoint:
 
 ```bash
-poetry add pytorch-lightning
+python -u -m ml.pesto.finetune.generate_teacher_labels \
+  --teacher-model 'runs/finetune_pesto/offline_mir_upstream_ce_20260929/best-epoch=084-train_loss=5.449664.ckpt' \
+  --output-dir runs/pesto_teacher/upstream_ce_best_e084 \
+  --wav "${WAVS[@]}" --device cuda
 ```
 
-## Что не делается (но было бы хорошо)
+Если дообучил нового teacher, замени `--teacher-model` на его best checkpoint и
+**выбери новый `--output-dir`**. Генератор переиспользует существующие `.npz`,
+когда совпали только длины WAV/меток: он не сверяет, каким checkpoint они были
+созданы. `--overwrite` принудительно пересчитает метки в старом каталоге.
+Для MIR-teacher baseline можно указать `--teacher-model mir-1k_g7` и отдельный
+каталог `runs/pesto_teacher/mir-1k_g7`.
 
-- **Валидация**: нет ground-truth F0. После обучения — слушать в Reaper, или сравнивать ONNX-выход с offline-PESTO на dev WAV из `data/v0/guitar/` (offline = reference).
-- **Mixed precision**: `--precision 16-mixed` может ускорить, но HCQT может быть нестабилен в fp16. Дефолт fp32.
+Teacher запускается offline, с реальным будущим контекстом. Для каждого WAV
+получается `.npz`: `activations` — post-shift pitch-распределения `float16`,
+`confidence` — soft confidence `float32`, `f0_hz` — диагностическое значение,
+`frame_index`, `time_s`, `num_samples`. `manifest.json` содержит пути к исходным
+WAV, параметры сетки кадров, checkpoint teacher и его SHA-256. Неполный последний
+chunk не размечается. Для короткой проверки `--max-minutes` ограничивает **каждый**
+WAV; такие метки не подходят для полного distillation-запуска.
+
+## 3. Distillation в streaming student
+
+Чистый teacher-weighted KL, начиная с исходного `mir-1k_g7`:
+
+```bash
+python -u -m ml.pesto.finetune.distill \
+  --mode pitch --student-checkpoint mir-1k_g7 \
+  --teacher-labels-dir runs/pesto_teacher/upstream_ce_best_e084 \
+  --wav "${WAVS[@]}" --validation-wav "${WAVS[2]}" \
+  --epochs 150 --accelerator gpu \
+  --run-name upstream_ce_best_e084_pitch_next
+```
+
+Вариант KL + три self-supervised loss с формулой CE как в upstream PESTO:
+
+```bash
+python -u -m ml.pesto.finetune.distill \
+  --mode pitch_kl_ssl --ssl-cross-entropy upstream \
+  --student-checkpoint mir-1k_g7 \
+  --teacher-labels-dir runs/pesto_teacher/upstream_ce_best_e084 \
+  --wav "${WAVS[@]}" --validation-wav "${WAVS[2]}" \
+  --epochs 150 --accelerator gpu \
+  --weight-invariance 0.2 --weight-shift-entropy 0.2 --weight-equivariance 0.1 \
+  --run-name upstream_ce_best_e084_pitch_kl_ssl_next
+```
+
+В обоих режимах student HCQT получает реальное прошлое и `refill` вместо
+будущего; pitch encoder обучается, confidence-head заморожен. KL сравнивает
+абсолютные pitch-распределения, взвешивая кадры teacher confidence. В
+`pitch_kl_ssl` к нему на train добавляются `invariance`, `shift_entropy` и
+`equivariance` с указанными **фиксированными** весами. Валидация считает только
+KL; сравнивать её число между **разными teacher** напрямую нельзя. Без
+`--ssl-cross-entropy upstream` дистилляция использует `probability` — CE без
+второго softmax. Текущий `DistillConfig`: batch 512, pitch LR `1e-5`, 150 эпох,
+`random_offset=False`; DataLoader перемешивает train-кадры.
+
+Есть также `--mode confidence`: soft BCE учит только confidence-head по
+`confidence` из тех же teacher-меток, заморозив pitch encoder. Если указать
+лучший pitch-student checkpoint как `--student-checkpoint`, итоговый checkpoint
+содержит обе ветки. Это псевдометки offline teacher, **не** ручная разметка
+voiced/unvoiced. Например:
+
+```bash
+python -u -m ml.pesto.finetune.distill \
+  --mode confidence \
+  --student-checkpoint 'runs/distill_pesto/upstream_ce_best_e084_pitch/best-pitch-epoch=114-val_loss=0.259167.ckpt' \
+  --teacher-labels-dir runs/pesto_teacher/upstream_ce_best_e084 \
+  --wav "${WAVS[@]}" --validation-wav "${WAVS[2]}" \
+  --epochs 150 --accelerator gpu \
+  --run-name upstream_ce_best_e084_pitch_confidence_next
+```
+
+Для экспорта после такого запуска укажи его `best-confidence-*.ckpt` в
+`--model-name`: checkpoint уже содержит и pitch, и обученную confidence-ветку.
+
+Артефакты находятся в `runs/distill_pesto/<run-name>/`: `config.json`, events,
+`last.ckpt`, `best-<mode>-epoch=...-val_loss=....ckpt` и финальный
+`distilled-<mode>-<run-name>.ckpt`. Для сравнения используй best. TensorBoard
+пишет `train_loss`, `val_loss`, `loss/pitch_kl_weighted/*`, а для KL+SSL ещё
+сырые и взвешенные `loss/{invariance,shift_entropy,equivariance}*/train`.
+`--max-minutes 1 --epochs 2` подходит для smoke test под **новым** `run-name`.
+
+Важная особенность provenance: `distill.py` не принимает `--teacher-model`;
+`teacher_model` в его `config.json` остаётся `mir-1k_g7` и используется для
+создания streaming HCQT. Реальный teacher определяется `teacher_labels_dir` и
+`manifest.json` внутри этого каталога.
+
+## 4. Экспорт и оценка
+
+В плагин экспортируется **streaming student**, не offline teacher. Экспортёр
+читает `config.json` рядом с checkpoint (44,1 кГц, 441, `mirror=1.0/refill`):
+
+```bash
+python -m ml.pesto.export_onnx \
+  --model-name 'runs/distill_pesto/upstream_ce_best_e084_pitch/best-pitch-epoch=114-val_loss=0.259167.ckpt' \
+  --output models/eval_upstream_ce_best_e084_pitch/pesto.onnx
+
+python -m ml.pitch_eval.eval_pesto_onnx \
+  --models models/eval_upstream_ce_best_e084_pitch/pesto.onnx \
+  --input data/v0/guitar \
+  --output runs/pitch_eval/upstream_ce_best_e084_pitch
+```
+
+Экспортёр пишет `pesto.onnx` и `pesto_onnx_meta.json`, по умолчанию сверяет
+ONNX с PyTorch на одном WAV. `eval_pesto_onnx` пишет `summary.csv`,
+`per_file.csv`, `confidence_sweep.csv` и покадровый `frames.csv.gz`. Для
+сравнения моделей нужны одинаковые входные WAV, порог confidence и настройки
+оценки. Выбранные для слуховой проверки ONNX перечислены в
+[корневом README](../../../README.md#сборка-с-одной-из-трёх-pesto-моделей).

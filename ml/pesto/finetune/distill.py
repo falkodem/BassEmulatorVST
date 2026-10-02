@@ -3,6 +3,7 @@
 The two modes are intentionally separate:
 - confidence: freeze pitch encoder and optimize soft BCE
 - pitch: freeze confidence classifier and optimize teacher-weighted KL only
+- pitch_kl_ssl: add PESTO invariance, shift-entropy and equivariance losses
 """
 import argparse
 import json
@@ -80,6 +81,12 @@ def build_distillation_module(
         weight_decay=cfg.weight_decay,
         scheduler_epochs=cfg.epochs,
         teacher_confidence_power=cfg.teacher_confidence_power,
+        ssl_cross_entropy=cfg.ssl_cross_entropy,
+        self_supervised_weights={
+            "invariance": cfg.weight_invariance,
+            "shift_entropy": cfg.weight_shift_entropy,
+            "equivariance": cfg.weight_equivariance,
+        },
     )
 
     missing, unexpected = module.load_state_dict(
@@ -110,7 +117,9 @@ def build_distillation_module(
 def parse_args() -> DistillConfig:
     cfg = DistillConfig()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mode", choices=["confidence", "pitch"], default=None)
+    parser.add_argument("--mode", choices=["confidence", "pitch", "pitch_kl_ssl"], default=None)
+    parser.add_argument("--wav", nargs="+", default=None)
+    parser.add_argument("--validation-wav", default=None)
     parser.add_argument("--student-checkpoint", default=None)
     parser.add_argument("--teacher-labels-dir", type=Path, default=None)
     parser.add_argument("--epochs", type=int, default=None)
@@ -118,10 +127,18 @@ def parse_args() -> DistillConfig:
     parser.add_argument("--max-minutes", type=float, default=None)
     parser.add_argument("--accelerator", default=None)
     parser.add_argument("--precision", default=None)
+    parser.add_argument("--ssl-cross-entropy", choices=["probability", "upstream"], default=None)
+    parser.add_argument("--weight-invariance", type=float, default=None)
+    parser.add_argument("--weight-shift-entropy", type=float, default=None)
+    parser.add_argument("--weight-equivariance", type=float, default=None)
     args = parser.parse_args()
 
     if args.mode is not None:
         cfg.mode = args.mode
+    if args.wav is not None:
+        cfg.wav_paths = args.wav
+    if args.validation_wav is not None:
+        cfg.validation_wav = args.validation_wav
     if args.student_checkpoint is not None:
         cfg.student_checkpoint = args.student_checkpoint
     if args.teacher_labels_dir is not None:
@@ -136,6 +153,14 @@ def parse_args() -> DistillConfig:
         cfg.accelerator = args.accelerator
     if args.precision is not None:
         cfg.precision = args.precision
+    if args.ssl_cross_entropy is not None:
+        cfg.ssl_cross_entropy = args.ssl_cross_entropy
+    if args.weight_invariance is not None:
+        cfg.weight_invariance = args.weight_invariance
+    if args.weight_shift_entropy is not None:
+        cfg.weight_shift_entropy = args.weight_shift_entropy
+    if args.weight_equivariance is not None:
+        cfg.weight_equivariance = args.weight_equivariance
     cfg.__post_init__()
     return cfg
 

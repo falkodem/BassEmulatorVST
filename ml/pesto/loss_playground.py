@@ -12,7 +12,7 @@ What this shows:
 - prob CE: textbook cross entropy between probability distributions:
   -sum(target * log(input)).
 
-The current fine-tune code vendors the same loss semantics as pesto-full.
+The current fine-tune code uses prob CE; pesto CE is kept for comparison.
 """
 from __future__ import annotations
 

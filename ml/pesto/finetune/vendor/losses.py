@@ -1,7 +1,8 @@
 """Loss functions for PESTO self-supervised training.
 
 Vendored from pesto-full src/losses/{base,entropy,equivariance}.py — merged
-into one file. Removed `ComposeLoss` (unused, has print statements anyway).
+into one file. The original cross-entropy applies log-softmax to encoder
+probabilities; probability mode omits that second softmax.
 """
 import torch
 import torch.nn as nn
@@ -18,7 +19,7 @@ class NullLoss(nn.Module):
 
 
 class CrossEntropyLoss(nn.Module):
-    """Wraps nn.CrossEntropyLoss with optional symmetric mode + detached targets.
+    """Cross-entropy of probability distributions with optional detached targets.
 
     Used as the invariance loss (compare original vs augmented view of same audio)
     and as the criterion inside ShiftCrossEntropy.
@@ -26,11 +27,13 @@ class CrossEntropyLoss(nn.Module):
     def __init__(self,
                  symmetric: bool = False,
                  detach_targets: bool = False,
-                 backend: nn.Module | None = None):
+                 mode: str = "probability"):
         super().__init__()
+        if mode not in {"probability", "upstream"}:
+            raise ValueError(f"Unsupported cross-entropy mode: {mode}")
         self.symmetric = symmetric
         self.detach_targets = detach_targets
-        self.backend = backend if backend is not None else nn.CrossEntropyLoss()
+        self.mode = mode
 
     def forward(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         if self.symmetric:
@@ -38,7 +41,10 @@ class CrossEntropyLoss(nn.Module):
         return self.compute_loss(input, target)
 
     def compute_loss(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        return self.backend(input, target.detach() if self.detach_targets else target)
+        target = target.detach() if self.detach_targets else target
+        if self.mode == "upstream":
+            return F.cross_entropy(input, target)
+        return -(target * input.float().clamp_min(1e-8).log()).sum(dim=-1).mean()
 
 
 class ShiftCrossEntropy(nn.Module):
@@ -58,6 +64,32 @@ class ShiftCrossEntropy(nn.Module):
         idx = target.unsqueeze(1) + torch.arange(x1.size(-1), device=target.device) + self.pad_length
         shift_x2 = torch.gather(x2, dim=1, index=idx)
         return self.criterion(x1, shift_x2)
+
+
+class ShiftWasserstein2(nn.Module):
+    """One-dimensional W2 between pitch distributions after undoing a known bin shift."""
+
+    def __init__(self, pad_length: int):
+        super().__init__()
+        self.pad_length = pad_length
+
+    def forward(self, x1: torch.Tensor, x2: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        x1 = F.pad(x1, (self.pad_length, self.pad_length))
+        x2 = F.pad(x2, (2 * self.pad_length, 2 * self.pad_length))
+        idx = target.unsqueeze(1) + torch.arange(x1.size(-1), device=target.device) + self.pad_length
+        x2 = torch.gather(x2, dim=1, index=idx)
+
+        cdf1 = x1.cumsum(dim=-1)
+        cdf2 = x2.cumsum(dim=-1)
+        zero = torch.zeros_like(cdf1[:, :1])
+        knots = torch.cat((zero, cdf1, cdf2), dim=-1).sort(dim=-1).values
+        mass = knots[:, 1:] - knots[:, :-1]
+        midpoints = ((knots[:, 1:] + knots[:, :-1]) / 2).detach().contiguous()
+        bins1 = torch.searchsorted(cdf1.detach().contiguous(), midpoints).clamp_max(x1.size(-1) - 1)
+        bins2 = torch.searchsorted(cdf2.detach().contiguous(), midpoints).clamp_max(x1.size(-1) - 1)
+        squared_distance = (bins1 - bins2).to(x1.dtype).square()
+        cost = (mass * squared_distance).sum(dim=-1)
+        return (torch.sqrt(cost + 1e-8) - 1e-4).mean()
 
 
 # ─── equivariance ────────────────────────────────────────────────────────────

@@ -90,7 +90,7 @@ class PESTO(pl.LightningModule):
 
     Three losses on CQT-frame triplets (original, augmented, pitch-shifted):
      * invariance: original vs augmented should give same activation distribution
-     * shift-cross-entropy: pitch-shifted distribution should be shifted version of original
+     * shift loss: pitch-shifted distribution should be shifted version of original
      * equivariance: scalar projection of activations should follow exact freq ratio
     """
     def __init__(self,
@@ -98,7 +98,8 @@ class PESTO(pl.LightningModule):
                  optimizer_cls,
                  scheduler_cls=None,
                  equiv_loss_fn: nn.Module | None = None,
-                 sce_loss_fn: nn.Module | None = None,
+                 shift_loss_fn: nn.Module | None = None,
+                 shift_loss_name: str = "shift_entropy",
                  inv_loss_fn: nn.Module | None = None,
                  pitch_shift: PitchShiftCQT | None = None,
                  transforms: Sequence[nn.Module] | None = None,
@@ -109,7 +110,8 @@ class PESTO(pl.LightningModule):
         self.scheduler_cls = scheduler_cls
 
         self.equiv_loss_fn = equiv_loss_fn or NullLoss()
-        self.sce_loss_fn = sce_loss_fn or NullLoss()
+        self.shift_loss_fn = shift_loss_fn or NullLoss()
+        self.shift_loss_name = shift_loss_name
         self.inv_loss_fn = inv_loss_fn or NullLoss()
 
         self.pitch_shift = pitch_shift or PitchShiftCQT(min_steps=0, max_steps=0)
@@ -177,18 +179,18 @@ class PESTO(pl.LightningModule):
         yt = self.encoder(xt)
 
         inv_loss = self.inv_loss_fn(y, ya)
-        shift_entropy_loss = self.sce_loss_fn(ya, yt, n_steps)
+        shift_loss = self.shift_loss_fn(ya, yt, n_steps)
         equiv_loss = self.equiv_loss_fn(ya, yt, n_steps)
 
         total_loss = self.loss_weighting.combine_losses(
             invariance=inv_loss,
-            shift_entropy=shift_entropy_loss,
+            **{self.shift_loss_name: shift_loss},
             equivariance=equiv_loss,
         )
 
         loss_dict = dict(invariance=inv_loss,
                          equivariance=equiv_loss,
-                         shift_entropy=shift_entropy_loss,
+                         **{self.shift_loss_name: shift_loss},
                          loss=total_loss)
         self.log_dict({f"loss/{k}/train": v for k, v in loss_dict.items()}, sync_dist=False)
         self.log("train_loss", total_loss,

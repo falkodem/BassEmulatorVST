@@ -8,6 +8,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from pesto.model import ConfidenceClassifier
 
+from ml.pesto.finetune.augmentations import BatchRandomGain, BatchRandomNoise
+from ml.pesto.finetune.vendor.losses import CrossEntropyLoss, PowerSeries, ShiftCrossEntropy
+from ml.pesto.finetune.vendor.pesto_module import PitchShiftCQT
 from ml.pesto.finetune.vendor.reduce_activations import reduce_activations
 
 
@@ -26,9 +29,11 @@ class PESTODistillationModule(pl.LightningModule):
         weight_decay: float,
         scheduler_epochs: int,
         teacher_confidence_power: float = 1.0,
+        ssl_cross_entropy: str = "probability",
+        self_supervised_weights: Mapping[str, float] | None = None,
     ):
         super().__init__()
-        if mode not in {"confidence", "pitch"}:
+        if mode not in {"confidence", "pitch", "pitch_kl_ssl"}:
             raise ValueError(f"Unsupported distillation mode: {mode}")
         self.encoder = encoder
         self.confidence = confidence
@@ -41,6 +46,27 @@ class PESTODistillationModule(pl.LightningModule):
         self.weight_decay = weight_decay
         self.scheduler_epochs = scheduler_epochs
         self.teacher_confidence_power = teacher_confidence_power
+        self.ssl_cross_entropy = ssl_cross_entropy
+        self.self_supervised_weights = dict(self_supervised_weights or {})
+        if mode == "pitch_kl_ssl":
+            expected = {"invariance", "shift_entropy", "equivariance"}
+            if self.self_supervised_weights.keys() != expected:
+                raise ValueError(f"pitch_kl_ssl requires weights for {sorted(expected)}")
+            self.pitch_shift = PitchShiftCQT(min_pitch_shift_steps, max_pitch_shift_steps)
+            self.augment = nn.Sequential(BatchRandomNoise(), BatchRandomGain())
+            cross_entropy = CrossEntropyLoss(
+                symmetric=True, detach_targets=True, mode=ssl_cross_entropy
+            )
+            self.invariance_loss = cross_entropy
+            self.shift_entropy_loss = ShiftCrossEntropy(
+                pad_length=max_pitch_shift_steps, criterion=cross_entropy
+            )
+            self.equivariance_loss = PowerSeries(
+                value=2 ** (1 / (12 * bins_per_semitone)),
+                power_min=1 - encoder.hparams["output_dim"],
+                power_max=1,
+                tau=2 ** (1 / 6) - 1,
+            )
         self.register_buffer("shift", torch.zeros((), dtype=torch.float), persistent=True)
 
         self.hyperparams = {
@@ -52,7 +78,7 @@ class PESTODistillationModule(pl.LightningModule):
             "reduction": reduction,
         }
 
-        train_pitch = mode == "pitch"
+        train_pitch = mode != "confidence"
         for parameter in self.encoder.parameters():
             parameter.requires_grad_(train_pitch)
         for parameter in self.confidence.parameters():
@@ -64,6 +90,9 @@ class PESTODistillationModule(pl.LightningModule):
 
     def _absolute_activations(self, x: torch.Tensor) -> torch.Tensor:
         raw = self.encoder(self._crop_pitch_input(x))
+        return self._roll_activations(raw)
+
+    def _roll_activations(self, raw: torch.Tensor) -> torch.Tensor:
         shift_bins = -round(float(self.shift.detach().cpu()) * self.bins_per_semitone)
         return torch.roll(raw, shifts=shift_bins, dims=-1)
 
@@ -95,12 +124,12 @@ class PESTODistillationModule(pl.LightningModule):
 
     def _pitch_loss(
         self,
-        x: torch.Tensor,
+        raw: torch.Tensor,
         teacher_activations: torch.Tensor,
         teacher_confidence: torch.Tensor,
         valid: torch.Tensor,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        student = self._absolute_activations(x).clamp_min(1e-8)
+        student = self._roll_activations(raw).clamp_min(1e-8)
         teacher = teacher_activations.to(dtype=student.dtype).clamp_min(1e-8)
         teacher = teacher / teacher.sum(dim=-1, keepdim=True)
         per_frame = torch.sum(teacher * (teacher.log() - student.log()), dim=-1)
@@ -115,14 +144,46 @@ class PESTODistillationModule(pl.LightningModule):
             ),
         }
 
+    def _self_supervised_losses(
+        self, x: torch.Tensor, valid: torch.Tensor, raw: torch.Tensor
+    ) -> dict[str, torch.Tensor]:
+        valid_x = x[valid]
+        if valid_x.size(0) == 0:
+            zero = raw.sum() * 0
+            return {name: zero for name in self.self_supervised_weights}
+        _, shifted, steps = self.pitch_shift(valid_x)
+        augmented = self.augment(self._crop_pitch_input(valid_x).clone())
+        shifted = self.augment(shifted)
+        original_pred = raw[valid]
+        augmented_pred = self.encoder(augmented)
+        shifted_pred = self.encoder(shifted)
+        return {
+            "invariance": self.invariance_loss(original_pred, augmented_pred),
+            "shift_entropy": self.shift_entropy_loss(augmented_pred, shifted_pred, steps),
+            "equivariance": self.equivariance_loss(augmented_pred, shifted_pred, steps),
+        }
+
     def _shared_step(self, batch: Any, stage: str) -> torch.Tensor:
         x, teacher_activations, teacher_confidence, valid = batch
         if self.mode == "confidence":
             loss, metrics = self._confidence_loss(x, teacher_confidence, valid)
+            loss_components = {"confidence_bce": loss}
         else:
+            raw = self.encoder(self._crop_pitch_input(x))
             loss, metrics = self._pitch_loss(
-                x, teacher_activations, teacher_confidence, valid
+                raw, teacher_activations, teacher_confidence, valid
             )
+            loss_components = {
+                "pitch_kl_weighted": loss,
+                "pitch_kl_unweighted": metrics["unweighted_kl"],
+            }
+            if self.mode == "pitch_kl_ssl" and stage == "train":
+                regularizers = self._self_supervised_losses(x, valid, raw)
+                for name, value in regularizers.items():
+                    weighted = self.self_supervised_weights[name] * value
+                    loss = loss + weighted
+                    loss_components[name] = value
+                    loss_components[f"{name}_weighted"] = weighted
 
         batch_size = x.size(0)
         self.log(
@@ -131,6 +192,13 @@ class PESTODistillationModule(pl.LightningModule):
             on_step=stage == "train",
             on_epoch=True,
             prog_bar=True,
+            logger=True,
+            batch_size=batch_size,
+        )
+        self.log_dict(
+            {f"loss/{name}/{stage}": value for name, value in loss_components.items()},
+            on_step=stage == "train",
+            on_epoch=True,
             logger=True,
             batch_size=batch_size,
         )
@@ -178,4 +246,6 @@ class PESTODistillationModule(pl.LightningModule):
         checkpoint["distillation"] = {
             "mode": self.mode,
             "teacher_confidence_power": self.teacher_confidence_power,
+            "ssl_cross_entropy": self.ssl_cross_entropy,
+            "self_supervised_weights": self.self_supervised_weights,
         }

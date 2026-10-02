@@ -1,0 +1,30 @@
+services:
+  pesto-train:
+    build:
+      context: ../..
+      dockerfile: docker/pesto-train/Dockerfile
+      args:
+        HOST_UID: "${HOST_UID:-11098}"
+        HOST_GID: "${HOST_GID:-11098}"
+    image: trainloop-pesto-train:cu121
+    container_name: trainloop-pesto-train
+    working_dir: /workspace
+    user: "${HOST_UID:-11098}:${HOST_GID:-11098}"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${GPU_DEVICE:-3}"]
+              capabilities: [gpu]
+    ports:
+      - "18950:6006"
+    volumes:
+      - ../../ml:/workspace/ml
+      - ../../models:/workspace/models
+      - ../../data:/workspace/data:ro
+      - ../../data/pesto_train:/data:ro
+      - ../../runs:/workspace/runs
+    stdin_open: true
+    tty: true
+    command: ["tensorboard", "--logdir=/workspace/runs", "--host=0.0.0.0", "--port=6006"]

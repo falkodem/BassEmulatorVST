@@ -600,7 +600,7 @@ AS-метка подаётся как дополнительный символ 
 ```
 Метод       Окно       RT      Транзиенты    Точность   Примечание
 ─────────────────────────────────────────────────────────────────────
-YIN         ~23 мс     Да      Умерен.       ~85-90%    Текущий. Бесплатно.
+YIN         ~23 мс     Да      Умерен.       ~85-90%    Исторический baseline.
 PYIN        ~50-100    Частич. Слабый        ~92%       HMM сглаживает
 CREPE       64 мс      Нет     Слабый        ~95%       Окно слишком большое
 PENN        5 мс       Нет*    Хороший       ~93%       * нет C++ порта
@@ -608,9 +608,9 @@ PESTO ⭐    < 5 мс     Да      Хороший       ~92%       ONNX, RT-rea
 SwiftF0 ⭐  < 5 мс     Да      Хороший       91.8%      Нет ONNX (пока)
 ```
 
-**Рекомендация:**
-- Offline (`process_audio.py`): PENN прямо сейчас
-- Phase 2 VST: PESTO через ONNX → RTNeural
+**Статус проекта:** в текущем VST PESTO работает через ANIRA + ONNX Runtime;
+YIN оставлен как baseline. `ml/bass_synth/process_audio.py` относится к
+отдельному эксперименту синтеза тембра и не запускает PENN.
 
 ---
 
@@ -675,10 +675,12 @@ HiFi-GAN Multi-Period Discriminator (MPD) — моделирует период�
 
 ```python
 L_total = L1_waveform × 0.1 + MRSTFT(fft_sizes=[512, 1024, 2048, 4096]) × 1.0
-# Phase 2A (conditioned): + envelope_loss × 0.5  (пока не реализован в ml/train.py)
+# Для будущего conditioned ML: + envelope_loss × 0.5
 ```
 
-Фактическая реализация: `ml/train.py`. `envelope_loss` в текущем baseline отсутствует.
+Это предлагаемый рецепт, не текущая конфигурация. В эксперименте
+`ml/bass_synth/train.py` выбран `multi_scale_stft` из `LOSS_REGISTRY`:
+`MultiScaleSTFTLoss` использует FFT 128/256/512 без `envelope_loss`.
 
 ---
 
@@ -758,17 +760,21 @@ Stateless TCN — фаза f₀/2 случайна на каждом processBloc
   Запись (после DAW comp.)    ~0 мс            ~0 мс ✓
 ```
 
-> **Важно:** `PluginProcessor.cpp` сейчас **не вызывает `setLatencySamples()`** — DAW-компенсация в записи не работает. Подробнее — §12.6.
+> **Статус реализации:** таблица выше — исторический бюджет Phase 2A. Текущий
+> `PluginProcessor::prepareToPlay()` вызывает `setLatencySamples(pesto.getLatencySamples())`
+> для потокового PESTO. Фактическую задержку и PDC ещё нужно проверить в Reaper.
 
 ### 12.6 DAW latency compensation
 
-JUCE-плагин должен вызывать `setLatencySamples(N)` чтобы DAW сдвинула дорожку при записи и компенсировала алгоритмическую задержку. В текущем коде этот вызов **отсутствует** — записанный бас будет смещён вправо на ~23 мс (YIN-окно) + размер processBlock. На ритм-партиях это слышно.
-
-Что делать: в `prepareToPlay` вызвать `setLatencySamples(yinWindowSamples + modelLookahead)`. DAW автоматически сдвинет дорожку при записи.
+JUCE-плагин сообщает DAW свою задержку через `setLatencySamples(N)`. В текущем
+`PluginProcessor::prepareToPlay()` уже вызывается
+`setLatencySamples(pesto.getLatencySamples())`: величину сообщает ANIRA, а
+дополнительный look-back для выбранного `mirror=1.0` равен нулю. Проверка
+фактического PDC при записи в Reaper остаётся открытой.
 
 ### 12.5 Inference engines для JUCE-плагина
 
-#### RTNeural (текущий)
+#### RTNeural (кандидат для будущего ML-тембра)
 [GitHub](https://github.com/jatinchowdhary18/RTNeural) — активно поддерживается (175+ коммитов, CI/CD).
 
 - Загружает веса из JSON напрямую → минималистичная интеграция
@@ -789,7 +795,7 @@ JUCE-плагин должен вызывать `setLatencySamples(N)` чтоб�
 
 | Задача | Движок |
 |---|---|
-| GRU baseline (Phase 2B текущий) | RTNeural — проще, меньше зависимостей |
+| GRU baseline (будущий Phase 2B) | RTNeural — проще, меньше зависимостей |
 | PESTO pitch detection в VST | ANIRA + ONNX Runtime |
 | DDSP / conditioned ML (Phase 2A) | ANIRA + LibTorch |
 | Любая новая архитектура Phase 2+ | ANIRA — гибче |

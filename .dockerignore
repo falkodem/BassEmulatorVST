@@ -1,0 +1,9 @@
+.git
+build
+data
+models
+runs
+venv
+venv_test
+__pycache__
+*.py[cod]

@@ -80,9 +80,12 @@ class GuitarStreamingDataModule(pl.LightningDataModule):
         # model checkpoint to take HCQT kernels from
         model_name: pesto checkpoint name (e.g. 'mir-1k_g7')
     """
+    frontend = "streaming"
+
     def __init__(self,
                  wav_paths: Sequence[str | Path],
                  *,
+                 max_minutes: float | None = None,
                  sample_rate: int = 44100,
                  chunk_size: int = 441,
                  precompute_batch: int = 256,
@@ -105,6 +108,7 @@ class GuitarStreamingDataModule(pl.LightningDataModule):
                  transforms: Sequence[nn.Module] | None = None):
         super().__init__()
         self.wav_paths = [Path(p) for p in wav_paths]
+        self.max_minutes = max_minutes
         self.sample_rate = sample_rate
         self.chunk_size = chunk_size
         self.precompute_batch = precompute_batch
@@ -147,8 +151,12 @@ class GuitarStreamingDataModule(pl.LightningDataModule):
         log.info("Loading %d WAV files into RAM", len(self.wav_paths))
         audios = []
         total_samples = 0
+        max_samples = None if self.max_minutes is None else int(
+            self.max_minutes * 60 * self.sample_rate
+        )
         for path in self.wav_paths:
-            data, sr = sf.read(str(path), dtype='float32', always_2d=False)
+            data, sr = sf.read(str(path), frames=-1 if max_samples is None else max_samples,
+                               dtype='float32', always_2d=False)
             if sr != self.sample_rate:
                 raise ValueError(f"{path.name}: sample_rate={sr}, expected {self.sample_rate}")
             if data.ndim > 1:
@@ -159,8 +167,8 @@ class GuitarStreamingDataModule(pl.LightningDataModule):
         total_min = total_samples / self.sample_rate / 60
         log.info("Loaded %.2f minutes total (%d samples)", total_min, total_samples)
 
-        # build streaming preprocessor (will be moved to GPU lazily)
-        self._stream_preproc = self._build_streaming_preprocessor()
+        if self.frontend == "streaming":
+            self._stream_preproc = self._build_streaming_preprocessor()
         self._offline_preproc = self._build_offline_preprocessor()
 
     def _build_streaming_preprocessor(self) -> nn.Module:
